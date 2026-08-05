@@ -60,15 +60,20 @@ nav:
   - Getting Started:
     - Installation: installation.md
     - Quick Start: quickstart.md
+    - Quick Start (中文): quickstart-zh.md
+    - 用户快速上手: quick-quick-start.md
   - Usage:
     - Commands Overview: commands.md
     - Running Jobs: usage-run.md
     - Manual Reservations: usage-reserve.md
+    - Scheduled Bookings: usage-schedule.md
     - Releasing GPUs: usage-release.md
     - Status Monitoring: usage-status.md
   - Features:
     - GPU Validation: features-validation.md
     - Unreserved Usage Detection: features-unreserved.md
+    - Guard and Enforcement: features-guard.md
+    - Idle Reservation Timeout: features-idle-timeout.md
     - LRU Allocation: features-lru.md
   - Configuration:
     - Configuration Guide: configuration.md

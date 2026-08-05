@@ -116,6 +116,21 @@ func TestClient_GPUState(t *testing.T) {
 	assert.Equal(t, "", retrievedState.User)
 	assert.True(t, lastReleased.Equal(retrievedState.LastReleased.Time))
 
+	// Available state with an observed unreserved activity keeps both
+	// timestamps, so "free for" can be measured from real occupancy
+	activity := time.Now()
+	err = client.SetGPUState(ctx, gpuID, &types.GPUState{
+		LastReleased: types.FlexibleTime{Time: lastReleased},
+		LastActivity: types.FlexibleTime{Time: activity},
+	})
+	assert.NoError(t, err)
+
+	retrievedState, err = client.GetGPUState(ctx, gpuID)
+	assert.NoError(t, err)
+	assert.Equal(t, "", retrievedState.User)
+	assert.True(t, lastReleased.Equal(retrievedState.LastReleased.Time))
+	assert.True(t, activity.Equal(retrievedState.LastActivity.Time))
+
 	// Delete GPU state
 	err = client.DeleteGPUState(ctx, gpuID)
 	assert.NoError(t, err)

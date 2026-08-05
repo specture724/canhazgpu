@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/russellb/canhazgpu/internal/types"
@@ -12,6 +13,26 @@ import (
 // This requires implementing parseNvidiaSmiOutput function if it's internal
 // The parsing logic is currently part of queryGPUMemory and queryGPUProcesses
 // Skipping detailed parsing tests and testing the public interface instead
+
+func TestGetProcessElapsedSeconds(t *testing.T) {
+	// The test process itself must have a resolvable elapsed time on any
+	// platform with /proc or ps.
+	assert.GreaterOrEqual(t, getProcessElapsedSeconds(os.Getpid()), int64(0))
+}
+
+func TestFormatProcessInfo(t *testing.T) {
+	processes := []types.GPUProcessInfo{
+		{PID: 12345, ProcessName: "python", MemoryMB: 8452, ElapsedSeconds: 7395},
+		{PID: 67890, ProcessName: "jupyter", MemoryMB: 512, ElapsedSeconds: 300},
+		{PID: 111, ProcessName: "train", MemoryMB: 0},
+	}
+
+	got := formatProcessInfo(processes)
+	assert.Equal(t,
+		"PID 12345 (python, 2h3m), PID 67890 (jupyter, 5m), PID 111 (train)",
+		got)
+	assert.Empty(t, formatProcessInfo(nil))
+}
 
 func TestGetProcessOwner(t *testing.T) {
 	tests := []struct {
@@ -114,10 +135,10 @@ func TestDetectGPUUsage_Integration(t *testing.T) {
 func TestGetUnreservedGPUs(t *testing.T) {
 	// Test the threshold logic that determines unreserved usage
 	usage := map[int]*types.GPUUsage{
-		0: {GPUID: 0, MemoryMB: 512},  // Below threshold - authorized
-		1: {GPUID: 1, MemoryMB: 1536}, // Above threshold - unreserved
-		2: {GPUID: 2, MemoryMB: 1024}, // At threshold - authorized (uses > not >=)
-		3: {GPUID: 3, MemoryMB: 0},    // No usage - authorized
+		0: {GPUID: 0, MemoryMB: 50},                           // Below threshold - authorized
+		1: {GPUID: 1, MemoryMB: types.MemoryThresholdMB + 50}, // Above threshold - unreserved
+		2: {GPUID: 2, MemoryMB: types.MemoryThresholdMB},      // At threshold - authorized (uses > not >=)
+		3: {GPUID: 3, MemoryMB: 0},                            // No usage - authorized
 	}
 
 	unreserved := GetUnreservedGPUs(context.Background(), usage, types.MemoryThresholdMB)
@@ -140,7 +161,7 @@ func TestIsGPUInUnreservedUse(t *testing.T) {
 		},
 		{
 			name:     "Below threshold",
-			usage:    &types.GPUUsage{MemoryMB: 512},
+			usage:    &types.GPUUsage{MemoryMB: 50},
 			expected: false,
 		},
 		{

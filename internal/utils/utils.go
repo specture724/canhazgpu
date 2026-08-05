@@ -86,6 +86,126 @@ func ParseDuration(duration string) (time.Duration, error) {
 	return 0, fmt.Errorf("invalid duration format: %s (use formats like 30s, 30m, 2h, 1d)", duration)
 }
 
+// ParseTimeSpec parses a wall clock time specification into an absolute time,
+// interpreted in the local timezone. See ParseTimeSpecFrom for the accepted
+// formats.
+func ParseTimeSpec(spec string, now time.Time) (time.Time, error) {
+	return ParseTimeSpecFrom(spec, now)
+}
+
+// ParseTimeSpecFrom parses a wall clock time specification relative to ref.
+//
+// Accepted formats:
+//
+//	14:00               clock time on ref's date, rolled to the next day if it
+//	                    would otherwise be in the past
+//	14:00:30            same, with seconds
+//	tomorrow 14:00      clock time on the day after ref (also "today 14:00")
+//	2026-08-04 14:00    explicit date and time ('T' also accepted as separator)
+//	2026-08-04          midnight on that date
+//	+2h                 relative to ref, using the usual duration formats
+//	now                 ref itself
+func ParseTimeSpecFrom(spec string, ref time.Time) (time.Time, error) {
+	s := strings.TrimSpace(spec)
+	if s == "" {
+		return time.Time{}, fmt.Errorf("empty time specification")
+	}
+
+	if strings.EqualFold(s, "now") {
+		return ref, nil
+	}
+
+	// Relative offsets: +30m, +2h, ...
+	if strings.HasPrefix(s, "+") {
+		d, err := ParseDuration(strings.TrimPrefix(s, "+"))
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid relative time %q: %v", spec, err)
+		}
+		return ref.Add(d), nil
+	}
+
+	// Day keywords pin the date explicitly, so no rolling forward
+	dayOffset := 0
+	rollForward := true
+	for _, keyword := range []struct {
+		prefix string
+		offset int
+	}{{"today", 0}, {"tomorrow", 1}} {
+		if len(s) > len(keyword.prefix) && strings.EqualFold(s[:len(keyword.prefix)], keyword.prefix) &&
+			(s[len(keyword.prefix)] == ' ' || s[len(keyword.prefix)] == 'T' || s[len(keyword.prefix)] == '@') {
+			dayOffset = keyword.offset
+			rollForward = false
+			s = strings.TrimSpace(s[len(keyword.prefix)+1:])
+			break
+		}
+	}
+
+	// Explicit date and time
+	for _, layout := range []string{"2006-01-02 15:04:05", "2006-01-02T15:04:05", "2006-01-02 15:04", "2006-01-02T15:04"} {
+		if t, err := time.ParseInLocation(layout, s, ref.Location()); err == nil {
+			return t, nil
+		}
+	}
+
+	// Bare clock time on ref's date (optionally shifted by a day keyword)
+	for _, layout := range []string{"15:04:05", "15:04"} {
+		if t, err := time.ParseInLocation(layout, s, ref.Location()); err == nil {
+			result := time.Date(ref.Year(), ref.Month(), ref.Day(), t.Hour(), t.Minute(), t.Second(), 0, ref.Location())
+			if dayOffset != 0 {
+				result = result.AddDate(0, 0, dayOffset)
+			}
+			if rollForward && result.Before(ref) {
+				result = result.AddDate(0, 0, 1)
+			}
+			return result, nil
+		}
+	}
+
+	// Bare date means midnight
+	if t, err := time.ParseInLocation("2006-01-02", s, ref.Location()); err == nil {
+		return t, nil
+	}
+
+	return time.Time{}, fmt.Errorf("invalid time %q (use formats like 14:00, 'tomorrow 09:30', 2026-08-04T14:00 or +2h)", spec)
+}
+
+// ParseDaySpec parses a calendar day specification and returns midnight at the
+// start of that day. Accepted formats are "2026-08-04", "today", "tomorrow",
+// "yesterday" and relative offsets like "+2d" or "-1d".
+func ParseDaySpec(spec string, now time.Time) (time.Time, error) {
+	s := strings.TrimSpace(spec)
+	midnight := func(t time.Time) time.Time {
+		return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, t.Location())
+	}
+
+	switch {
+	case s == "" || strings.EqualFold(s, "today"):
+		return midnight(now), nil
+	case strings.EqualFold(s, "tomorrow"):
+		return midnight(now).AddDate(0, 0, 1), nil
+	case strings.EqualFold(s, "yesterday"):
+		return midnight(now).AddDate(0, 0, -1), nil
+	}
+
+	if strings.HasPrefix(s, "+") || strings.HasPrefix(s, "-") {
+		negative := strings.HasPrefix(s, "-")
+		d, err := ParseDuration(strings.TrimLeft(s, "+-"))
+		if err != nil {
+			return time.Time{}, fmt.Errorf("invalid date %q: %v", spec, err)
+		}
+		if negative {
+			d = -d
+		}
+		return midnight(now.Add(d)), nil
+	}
+
+	t, err := time.ParseInLocation("2006-01-02", s, now.Location())
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid date %q (use YYYY-MM-DD, today, tomorrow or +1d)", spec)
+	}
+	return t, nil
+}
+
 // FormatDuration formats a duration into human readable format
 func FormatDuration(d time.Duration) string {
 	if d < time.Minute {
@@ -97,6 +217,26 @@ func FormatDuration(d time.Duration) string {
 	seconds := int(d.Seconds()) % 60
 
 	return fmt.Sprintf("%dh %dm %ds", hours, minutes, seconds)
+}
+
+// FormatDurationShort formats a duration compactly, e.g. "45s", "15m", "1h30m"
+func FormatDurationShort(d time.Duration) string {
+	if d < 0 {
+		return "0s"
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	}
+
+	hours := int(d.Hours())
+	minutes := int(d.Minutes()) % 60
+	if minutes == 0 {
+		return fmt.Sprintf("%dh", hours)
+	}
+	return fmt.Sprintf("%dh%dm", hours, minutes)
 }
 
 // FormatTime formats a time.Time into relative format like "2h 30m 15s ago"

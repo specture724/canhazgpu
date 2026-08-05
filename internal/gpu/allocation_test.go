@@ -25,6 +25,48 @@ func TestAllocationEngine_Structure(t *testing.T) {
 	assert.NotNil(t, engine.client)
 }
 
+func TestBuildGPUStatus_Utilization(t *testing.T) {
+	engine := &AllocationEngine{config: &types.Config{MemoryThreshold: 100}}
+	usage := &types.GPUUsage{GPUID: 0, MemoryMB: 512, UtilizationPercent: 87}
+
+	status := engine.buildGPUStatus(0, &types.GPUState{}, usage)
+	assert.Equal(t, 87, status.UtilizationPercent)
+	assert.Equal(t, "UNRESERVED", status.Status)
+	assert.Equal(t, "[validated: 512MB used]", status.ValidationInfo)
+	assert.Equal(t, "used", status.ProcessInfo)
+
+	status = engine.buildGPUStatus(0, &types.GPUState{}, &types.GPUUsage{GPUID: 0, MemoryMB: 0})
+	assert.Zero(t, status.UtilizationPercent)
+}
+
+func TestBuildGPUStatus_FreeTimeTracksUnreservedActivity(t *testing.T) {
+	engine := &AllocationEngine{config: &types.Config{MemoryThreshold: 1024}}
+	now := time.Now()
+
+	// A GPU that was released long ago but seen in use without a reservation
+	// minutes ago must show the recent activity as the free-since time
+	state := &types.GPUState{
+		LastReleased: types.FlexibleTime{Time: now.Add(-3 * time.Hour)},
+		LastActivity: types.FlexibleTime{Time: now.Add(-2 * time.Minute)},
+	}
+	// Below the memory threshold the GPU counts as free; the recent activity
+	// must still be reflected in the free-since time
+	usage := &types.GPUUsage{GPUID: 0, MemoryMB: 512}
+
+	status := engine.buildGPUStatus(0, state, usage)
+	assert.Equal(t, "AVAILABLE", status.Status)
+	assert.WithinDuration(t, now.Add(-2*time.Minute), status.LastReleased, time.Second)
+
+	// Without any activity, the release time is used as before
+	state = &types.GPUState{LastReleased: types.FlexibleTime{Time: now.Add(-time.Hour)}}
+	status = engine.buildGPUStatus(0, state, usage)
+	assert.WithinDuration(t, now.Add(-time.Hour), status.LastReleased, time.Second)
+
+	// Never seen at all: still "never used"
+	status = engine.buildGPUStatus(0, &types.GPUState{}, usage)
+	assert.True(t, status.LastReleased.IsZero())
+}
+
 func TestAllocationEngine_GetGPUStatus_Structure(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")

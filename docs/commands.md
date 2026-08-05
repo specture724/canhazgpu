@@ -1,20 +1,23 @@
 # Commands Overview
 
-canhazgpu provides eight main commands for GPU management:
+canhazgpu provides eleven main commands for GPU management:
 
 ```bash
 ❯ canhazgpu --help
 Usage: canhazgpu [OPTIONS] COMMAND [ARGS]...
 
 Commands:
-  admin    Initialize GPU pool for this machine
-  queue    Show the GPU reservation queue
-  release  Release manually reserved GPUs held by the current user
-  report   Generate GPU usage reports
-  reserve  Reserve GPUs manually for a specified duration
-  run      Reserve GPUs and run a command with CUDA_VISIBLE_DEVICES set
-  status   Show current GPU allocation status
-  web      Start a web server for GPU status monitoring
+  admin       Initialize GPU pool for this machine
+  guard       Watch the GPUs and warn users who bypass the reservation system
+  queue       Show the GPU reservation queue
+  release     Release manually reserved GPUs held by the current user
+  report      Generate GPU usage reports
+  reserve     Reserve GPUs manually for a specified duration
+  run         Reserve GPUs and run a command with CUDA_VISIBLE_DEVICES set
+  schedule    Show the GPU booking schedule for a day
+  status      Show current GPU allocation status
+  violations  Show GPU usage that bypassed the reservation system
+  web         Start a web server for GPU status monitoring
 ```
 
 ## Global Flags
@@ -25,7 +28,8 @@ All commands support these global configuration flags:
 - `--redis-host`: Redis server hostname (default: localhost)
 - `--redis-port`: Redis server port (default: 6379)
 - `--redis-db`: Redis database number (default: 0)
-- `--memory-threshold`: Memory threshold in MB to consider a GPU as "in use" (default: 1024)
+- `--memory-threshold`: Memory threshold in MB to consider a GPU as "in use" (default: 100)
+- `--booking-protection-window`: How far ahead reservations without a fixed end time (`run`) avoid GPUs needed by [scheduled bookings](usage-schedule.md) (default: 30m)
 
 **Configuration Methods:**
 
@@ -141,6 +145,7 @@ canhazgpu status -j
 
 **Options:**
 - `-j, --json`: Output status as JSON array instead of table format
+- `-v, --verbose`: More process detail in DETAILS. `-v` adds process names (max 2), `-vv` shows all
 
 **[→ Detailed Status Guide](usage-status.md)**
 
@@ -167,12 +172,12 @@ canhazgpu status --json --memory-threshold 512
 
 **Table Output Example:**
 ```bash
-GPU  STATUS      USER      DURATION     TYPE    MODEL                    DETAILS                   VALIDATION
----  ------      ----      --------     ----    -----                    -------                   ----------
-0    AVAILABLE   -         -            -       -                        free for 0h 30m 15s      45MB used
-1    IN_USE      alice     0h 15m 30s   RUN     meta-llama/Llama-2-7b-chat-hf  heartbeat 0h 0m 5s ago    8452MB, 1 processes
-2    UNRESERVED  user bob  -            -       codellama/CodeLlama-7b-Instruct-hf        1024MB used by PID 12345 (python3), PID 67890 (jupyter)  -
-3    IN_USE      charlie   1h 2m 15s    MANUAL  -                        expires in 3h 15m 45s    no usage detected
+GPU  STATUS      USER      DURATION     TYPE    MODEL                    DETAILS                   MEMORY          NOTE  UTIL
+---  ------      ----      --------     ----    -----                    -------                   ----------      ----  ----
+0    AVAILABLE   -         -            -       -                        free for 0h 30m 15s      45MB used        -     0%
+1    IN_USE      alice     0h 15m 30s   RUN     meta-llama/Llama-2-7b-chat-hf  heartbeat 0h 0m 5s ago    8452MB, 1 processes   -     87%
+2    UNRESERVED  user bob  -            -       codellama/CodeLlama-7b-Instruct-hf        used by PID 12345 (2h3m), PID 67890 (5m)  1024MB, 2 processes  -  42%
+3    IN_USE      charlie   1h 2m 15s    MANUAL  -                        expires in 3h 15m 45s    no usage detected  -   5%
 ```
 
 **JSON Output Example:**
@@ -182,7 +187,8 @@ GPU  STATUS      USER      DURATION     TYPE    MODEL                    DETAILS
     "gpu_id": 0,
     "status": "AVAILABLE",
     "details": "free for 0h 30m 15s",
-    "validation": "45MB used"
+    "validation": "45MB used",
+    "utilization_percent": 0
   },
   {
     "gpu_id": 1,
@@ -201,8 +207,10 @@ GPU  STATUS      USER      DURATION     TYPE    MODEL                    DETAILS
     "gpu_id": 2,
     "status": "UNRESERVED",
     "details": "WITHOUT RESERVATION",
+    "validation": "1024MB, 2 processes",
+    "utilization_percent": 42,
     "unreserved_users": ["bob"],
-    "process_info": "1024MB used by PID 12345 (python3), PID 67890 (jupyter)",
+    "process_info": "used by PID 12345 (2h3m), PID 67890 (5m)",
     "model": {
       "provider": "codellama",
       "model": "codellama/CodeLlama-7b-Instruct-hf"
@@ -233,7 +241,8 @@ GPU  STATUS      USER      DURATION     TYPE    MODEL                    DETAILS
 - `TYPE`: Reservation type (RUN, MANUAL)
 - `MODEL`: Detected AI model (if any)
 - `DETAILS`: Additional information (heartbeat, expiry, process info)
-- `VALIDATION`: Actual GPU usage validation (memory, process count)
+- `MEMORY`: GPU memory usage and process count reported by the provider
+- `UTIL`: GPU utilization percentage from the provider (nvidia-smi `utilization.gpu`, 0-100)
 
 ## run
 
@@ -323,6 +332,7 @@ Manually reserve GPUs for a specified duration.
 
 ```bash
 canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>] [--nonblock] [--wait <duration>]
+                  [--idle-timeout <time>] [--start <time>] [--end <time>]
 ```
 
 **[→ Detailed Reserve Guide](usage-reserve.md)**
@@ -334,6 +344,15 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>] [--nonb
 - `--nonblock`: Fail immediately if GPUs are unavailable instead of waiting in queue
 - `--wait`: Maximum time to wait for GPUs (e.g., 30m, 2h). Default: wait forever.
 - `--short`: Output only GPU IDs (for use with command substitution)
+- `--idle-timeout`: Release the reservation if no GPU usage is detected for this long (default: 15m, `0` disables)
+- `--start`: Book the GPUs for a future window starting then, instead of reserving now
+- `--end`: End of the window (defaults to `--duration` after the start)
+
+!!! tip "Idle Reservations Are Released"
+    By default a manual reservation that shows no GPU activity for 15 minutes is released so the GPUs return to the pool. See [Idle Reservation Timeout](features-idle-timeout.md).
+
+!!! tip "Booking Ahead"
+    With `--start`, `reserve` creates a booking for a future time window rather than reserving immediately. See [Scheduled Bookings](usage-schedule.md).
 
 !!! note "GPU Selection Options"
     You can use `--gpus` alone, `--gpu-ids` alone, or both together if:
@@ -367,6 +386,12 @@ canhazgpu reserve --duration 30m
 
 # Reserve 1 GPU for 2 days
 canhazgpu reserve --gpus 1 --duration 2d
+
+# Keep the reservation even if the GPU sits unused
+canhazgpu reserve --gpus 1 --duration 8h --idle-timeout 0
+
+# Book 2 GPUs from 14:00 to 16:00 instead of reserving now
+canhazgpu reserve --start 14:00 --end 16:00 --gpus 2
 ```
 
 **Important Note:**
@@ -513,6 +538,137 @@ Total: 2 entries waiting for 4 GPUs (2 partially allocated)
 }
 ```
 
+## schedule
+
+Show the GPU booking schedule for a day, and cancel bookings.
+
+```bash
+canhazgpu schedule [--date <day>] [--days <n>] [--json] [--cancel <id>] [--force]
+```
+
+**[→ Detailed Schedule Guide](usage-schedule.md)**
+
+**Options:**
+- `--date`: Day to display (`YYYY-MM-DD`, `today`, `tomorrow`, `+2d`; default: `today`)
+- `--days`: Number of days to display, starting at `--date` (default: 1)
+- `--json`: Output the schedule as JSON
+- `--cancel`: Cancel a booking by (abbreviated) ID
+- `--force`: Allow cancelling a booking that belongs to someone else
+- `--no-color`: Disable colored output
+
+Bookings themselves are created with `canhazgpu reserve --start ...`.
+
+**Example Output:**
+```bash
+❯ canhazgpu schedule
+GPU Booking Schedule - 2026-08-03 (Mon)
+
+      00 01 02 03 04 05 06 07 08 09 10 11 12 13 14 15 16 17 18 19 20 21 22 23    NOW
+GPU0  ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· aa !! bb ·· ·· ·· ·· ·· ·· ·· ··    alice MANUAL 8452MB
+GPU1  ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· bb bb ·· ·· ·· ·· ·· ·· ·· ··    free
+GPU2  ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ··    carol UNRESERVED 2048MB
+GPU3  ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ·· ··    dave MANUAL booked idle 4m
+                                             ^ now 13:06
+
+  a  alice        13:06-15:06           GPU 0        manual reservation  note: interactive work
+  b  bob          14:00-16:00           GPU 0,1      booking 4f89853e (pending)  note: fine-tune
+  ·  free
+```
+
+Each row is a GPU and each pair of characters is one hour, so a character covers 30 minutes. `·` is free time, letters refer to the legend, and `!` marks GPUs where two entries overlap — typically a booking that is about to take over from an earlier reservation.
+
+The **NOW** column on the right shows the live state of each GPU: who holds it, whether the GPU is actually in use (memory), whether the reservation came from a booking, and how long it has been idle. It is printed only for the day containing the current time.
+
+**Cancelling:**
+```bash
+❯ canhazgpu schedule --cancel 4f89853e
+Cancelled booking 4f89853e: bob, GPU 0,1, 14:00-16:00
+```
+
+## guard
+
+Watch the GPUs continuously and react to usage that bypasses reservations.
+
+```bash
+canhazgpu guard [--enforce] [--interval <time>] [--once] [--dry-run]
+```
+
+**[→ Detailed Guard Guide](features-guard.md)**
+
+**Key options:**
+- `--enforce`: Terminate offending processes once warnings are exhausted (default: warn only)
+- `--dry-run`: With `--enforce`, report terminations without sending signals
+- `--interval`: How often to scan (default: 15s)
+- `--once`: Single scan and exit, for cron
+- `--grace`: How long a process may use a GPU before it is reported (default: 60s)
+- `--confirmations`: Consecutive scans required before acting (default: 2)
+- `--warn-interval`: Time between repeated warnings (default: 5m)
+- `--max-warnings`: Warnings before enforcement starts (default: 3)
+- `--kill-grace`: Wait between SIGINT, SIGTERM and SIGKILL (default: 30s)
+- `--max-kills-per-hour`: Safety limit on terminations (default: 3, 0 disables)
+- `--channels`: Warning channels: `process`, `tty`, `log`, `wall` (default: `process,tty,log`)
+- `--log-file`: Also append warnings to this file
+- `--exclude-users` / `--exclude-commands`: Allow lists
+- `--min-memory`: Ignore processes below this many MB
+- `--notify-holder`: Tell the reservation holder when somebody else uses their GPU (default: true)
+- `--no-maintenance`: Do not activate bookings or release expired reservations
+
+**Examples:**
+```bash
+# Warn only, scanning every 15 seconds
+canhazgpu guard
+
+# See what enforcement would do without touching anything
+canhazgpu guard --enforce --dry-run
+
+# Warn, then terminate offenders
+canhazgpu guard --enforce
+
+# Single scan from cron
+canhazgpu guard --once
+```
+
+Warnings are written into the standard error of the offending process, so they
+appear in the terminal running the job, plus any terminal that user has open.
+Two kinds of violation are detected: `unreserved` (nobody reserved the GPU) and
+`foreign` (somebody else reserved it).
+
+The guard is the only long-running part of canhazgpu, so it also activates
+scheduled bookings and releases expired, stale and idle reservations.
+
+!!! warning "Run as root"
+    Warning and terminating other users' processes requires root; normally the
+    guard runs from systemd. As a normal user it still detects and records
+    violations but can only reach your own processes.
+
+!!! note "Single instance"
+    Only one guard runs at a time, enforced with a Redis lock.
+
+## violations
+
+Show GPU usage that bypassed the reservation system, as recorded by the guard.
+
+```bash
+canhazgpu violations [--json] [--history] [--days <n>]
+```
+
+**Options:**
+- `--json`: Output as JSON
+- `--history`: Show resolved violations instead of open ones
+- `--days`: How many days of history to include (default: 7)
+
+**Example Output:**
+```bash
+❯ canhazgpu violations
+ GPU │ KIND       │ USER                  │ PID   │ MEMORY  │ DURATION │ COMMAND                  │ ACTION
+─────┼────────────┼───────────────────────┼───────┼─────────┼──────────┼──────────────────────────┼──────────────────────
+ 2   │ UNRESERVED │ bob                   │ 12345 │ 8452MB  │ 15m      │ python train.py --mod... │ 3 warning(s), SIGINT
+ 3   │ FOREIGN    │ carol (holder: alice) │ 23456 │ 40960MB │ 5m       │ vllm serve               │ 1 warning(s)
+```
+
+Resolved violations are kept for 90 days, so `--history` answers "who keeps
+bypassing the tool?".
+
 ## web
 
 Start a web server providing a dashboard for real-time monitoring and reports.
@@ -606,7 +762,8 @@ All allocation commands (`run` and `reserve`) automatically:
 
 1. **Scan for unreserved usage** using nvidia-smi
 2. **Exclude unreserved GPUs** from the available pool
-3. **Provide detailed error messages** if insufficient GPUs remain
+3. **Hold back GPUs needed by scheduled bookings** during the window the reservation would cover
+4. **Provide detailed error messages** if insufficient GPUs remain
 
 ### MRU-per-User Allocation
 
@@ -620,7 +777,8 @@ When multiple GPUs are available, the system uses **Most Recently Used per User*
 ### Reservation Types
 
 - **Run-type reservations**: Maintained by heartbeat, auto-released when process ends
-- **Manual reservations**: Time-based expiry, require explicit release or timeout
+- **Manual reservations**: Time-based expiry, require explicit release or timeout, and are also released when they sit [idle](features-idle-timeout.md)
+- **Bookings**: A future time window that becomes a manual reservation when it starts, see [Scheduled Bookings](usage-schedule.md)
 
 ### Status Integration
 

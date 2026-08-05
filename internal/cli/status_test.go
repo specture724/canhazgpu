@@ -8,8 +8,76 @@ import (
 
 	"github.com/jedib0t/go-pretty/v6/table"
 	"github.com/russellb/canhazgpu/internal/gpu"
+	"github.com/russellb/canhazgpu/internal/types"
 	"github.com/stretchr/testify/assert"
 )
+
+func TestFormatProcessRuntime(t *testing.T) {
+	processes := []types.GPUProcessInfo{
+		{PID: 12345, ProcessName: "python", ElapsedSeconds: 7395},
+		{PID: 67890, ProcessName: "jupyter", ElapsedSeconds: 300},
+		{PID: 111, ProcessName: "train"},
+		{PID: 222, ProcessName: "extra", ElapsedSeconds: 60},
+	}
+
+	// Default: PID and elapsed time only, capped at 3 processes
+	got := formatProcessRuntime(processes, 0)
+	assert.Equal(t, "processes: PID 12345 (2h3m), PID 67890 (5m), PID 111, +1 more", got)
+
+	// -v: add process names, at most two
+	got = formatProcessRuntime(processes, 1)
+	assert.Equal(t, "processes: PID 12345 (python, 2h3m), PID 67890 (jupyter, 5m), +2 more", got)
+
+	// -vv: everything, with names
+	got = formatProcessRuntime(processes, 2)
+	assert.Equal(t,
+		"processes: PID 12345 (python, 2h3m), PID 67890 (jupyter, 5m), PID 111 (train), PID 222 (extra, 1m)",
+		got)
+
+	assert.Empty(t, formatProcessRuntime(nil, 0))
+	assert.Empty(t, formatProcessRuntime([]types.GPUProcessInfo{}, 2))
+}
+
+func TestDisplayGPUStatusTable_Utilization(t *testing.T) {
+	status := gpu.GPUStatusInfo{
+		GPUID:              0,
+		Status:             "IN_USE",
+		User:               "testuser",
+		ReservationType:    "run",
+		Duration:           1 * time.Hour,
+		LastHeartbeat:      time.Now(),
+		UtilizationPercent: 42,
+	}
+
+	var buf bytes.Buffer
+	tbl := table.NewWriter()
+	tbl.SetOutputMirror(&buf)
+	tbl.SetStyle(table.StyleLight)
+	tbl.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "MEMORY", "MODEL", "NOTE", "UTIL"})
+
+	addGPUStatusRow(tbl, status, false)
+	tbl.Render()
+
+	output := buf.String()
+	assert.Contains(t, output, "42%", "Should show GPU utilization in UTIL column")
+	assert.Contains(t, output, "UTIL", "Should show utilization header")
+}
+
+func TestFormatUnreservedDetails(t *testing.T) {
+	status := gpu.GPUStatusInfo{
+		MemoryMB: 1024,
+		Processes: []types.GPUProcessInfo{
+			{PID: 12345, ProcessName: "python", ElapsedSeconds: 7395},
+			{PID: 67890, ProcessName: "jupyter", ElapsedSeconds: 300},
+		},
+	}
+
+	assert.Equal(t, "used by PID 12345 (2h3m), PID 67890 (5m)", formatUnreservedDetails(status, 0))
+	assert.Equal(t, "used by PID 12345 (python, 2h3m), PID 67890 (jupyter, 5m)", formatUnreservedDetails(status, 1))
+
+	noProcesses := gpu.GPUStatusInfo{MemoryMB: 1024}
+	assert.Empty(t, formatUnreservedDetails(noProcesses, 2))
+}
 
 func TestDisplayGPUStatusTable(t *testing.T) {
 	// Create sample GPU status data
@@ -30,10 +98,12 @@ func TestDisplayGPUStatusTable(t *testing.T) {
 			ValidationInfo:  "[validated: 512MB, 1 processes]",
 		},
 		{
-			GPUID:           2,
-			Status:          "UNRESERVED",
-			UnreservedUsers: []string{"baduser"},
-			ProcessInfo:     "1024MB used by 1 process",
+			GPUID:              2,
+			Status:             "UNRESERVED",
+			UnreservedUsers:    []string{"baduser"},
+			ProcessInfo:        "used by PID 999 (python)",
+			ValidationInfo:     "[validated: 1024MB, 1 processes]",
+			UtilizationPercent: 87,
 		},
 	}
 
@@ -44,7 +114,7 @@ func TestDisplayGPUStatusTable(t *testing.T) {
 	tbl.SetStyle(table.StyleLight)
 
 	// Set header
-	tbl.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "VALIDATION", "MODEL"})
+	tbl.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "MEMORY", "MODEL", "NOTE", "UTIL"})
 
 	// Test each status type
 	for _, status := range statuses {
@@ -63,6 +133,9 @@ func TestDisplayGPUStatusTable(t *testing.T) {
 	assert.Contains(t, output, "UNRESERVED", "Should show unreserved status")
 	assert.Contains(t, output, "testuser", "Should show user name")
 	assert.Contains(t, output, "baduser", "Should show unreserved user")
+	assert.Contains(t, output, "1024MB", "Should show unreserved memory in MEMORY column")
+	assert.Contains(t, output, "87%", "Should show GPU utilization")
+	assert.Contains(t, output, "UTIL", "Should show utilization header")
 
 	// Check that it's formatted as a table
 	lines := strings.Split(output, "\n")
@@ -145,9 +218,9 @@ func TestDisplayGPUStatusTable_ConditionalModelColumn(t *testing.T) {
 
 	// Print header - exclude MODEL column if no models detected
 	if hasModels {
-		tbl1.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "VALIDATION", "MODEL"})
+		tbl1.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "MEMORY", "MODEL", "NOTE", "UTIL"})
 	} else {
-		tbl1.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "VALIDATION"})
+		tbl1.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "MEMORY", "NOTE", "UTIL"})
 	}
 
 	for _, status := range statusesNoModel {
@@ -161,7 +234,7 @@ func TestDisplayGPUStatusTable_ConditionalModelColumn(t *testing.T) {
 	assert.Contains(t, outputNoModel, "GPU", "Should have GPU column")
 	assert.Contains(t, outputNoModel, "STATUS", "Should have STATUS column")
 	assert.Contains(t, outputNoModel, "DETAILS", "Should have DETAILS column")
-	assert.Contains(t, outputNoModel, "VALIDATION", "Should have VALIDATION column")
+	assert.Contains(t, outputNoModel, "MEMORY", "Should have MEMORY column")
 
 	// Test with GPUs that have model information - MODEL column should be included
 	statusesWithModel := []gpu.GPUStatusInfo{
@@ -201,9 +274,9 @@ func TestDisplayGPUStatusTable_ConditionalModelColumn(t *testing.T) {
 
 	// Print header - include MODEL column if models detected
 	if hasModels2 {
-		tbl2.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "VALIDATION", "MODEL"})
+		tbl2.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "MEMORY", "MODEL", "NOTE", "UTIL"})
 	} else {
-		tbl2.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "VALIDATION"})
+		tbl2.AppendHeader(table.Row{"GPU", "STATUS", "USER", "DURATION", "TYPE", "DETAILS", "MEMORY", "NOTE", "UTIL"})
 	}
 
 	for _, status := range statusesWithModel {
@@ -218,6 +291,6 @@ func TestDisplayGPUStatusTable_ConditionalModelColumn(t *testing.T) {
 	assert.Contains(t, outputWithModel, "STATUS", "Should have STATUS column")
 	assert.Contains(t, outputWithModel, "MODEL", "Should have MODEL column")
 	assert.Contains(t, outputWithModel, "DETAILS", "Should have DETAILS column")
-	assert.Contains(t, outputWithModel, "VALIDATION", "Should have VALIDATION column")
+	assert.Contains(t, outputWithModel, "MEMORY", "Should have MEMORY column")
 	assert.Contains(t, outputWithModel, "meta-llama/Llama-2-7b-chat-hf", "Should display the detected model")
 }

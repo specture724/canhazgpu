@@ -63,6 +63,12 @@ func (a *AMDProvider) DetectGPUUsage(ctx context.Context) (map[int]*types.GPUUsa
 		return nil, fmt.Errorf("failed to query AMD GPU processes: %v", err)
 	}
 
+	// Query GPU utilization
+	utilization, err := a.queryGPUUtilization(ctx)
+	if err != nil {
+		utilization = nil // best effort: utilization is an extra, not fatal
+	}
+
 	// Combine memory usage and process information
 	for gpuID, memoryMB := range memoryUsage {
 		gpuUsage := &types.GPUUsage{
@@ -80,6 +86,10 @@ func (a *AMDProvider) DetectGPUUsage(ctx context.Context) (map[int]*types.GPUUsa
 				gpuUsage.Processes = append(gpuUsage.Processes, proc)
 				gpuUsage.Users[proc.User] = true
 			}
+		}
+
+		if util, exists := utilization[gpuID]; exists {
+			gpuUsage.UtilizationPercent = util
 		}
 
 		usage[gpuID] = gpuUsage
@@ -148,6 +158,39 @@ func (a *AMDProvider) queryGPUMemory(ctx context.Context) (map[int]int, error) {
 	}
 
 	return memory, nil
+}
+
+// queryGPUUtilization queries GPU utilization via amd-smi. ROCm versions name
+// the metric differently ("gpu_usage" or "gfx_usage"), so both are tried and a
+// missing field simply yields 0.
+func (a *AMDProvider) queryGPUUtilization(ctx context.Context) (map[int]int, error) {
+	cmd := exec.CommandContext(ctx, "amd-smi", "metric", "-m", "--json")
+	output, err := cmd.Output()
+	if err != nil {
+		return nil, fmt.Errorf("amd-smi metric failed: %v", err)
+	}
+
+	metricData, err := unmarshalAMDSmiOutput(output)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse amd-smi metric output: %v", err)
+	}
+
+	utilization := make(map[int]int)
+	for _, gpu := range metricData {
+		if gpuIDVal, ok := gpu["gpu"].(float64); ok {
+			gpuID := int(gpuIDVal)
+			for _, key := range []string{"gpu_usage", "gfx_usage"} {
+				if usage, ok := gpu[key].(map[string]interface{}); ok {
+					if value, ok := usage["value"].(float64); ok {
+						utilization[gpuID] = int(value)
+						break
+					}
+				}
+			}
+		}
+	}
+
+	return utilization, nil
 }
 
 // queryGPUProcesses queries GPU processes via amd-smi
@@ -244,6 +287,7 @@ func (a *AMDProvider) parseProcessInfo(proc map[string]interface{}) *types.GPUPr
 		user = "unknown"
 	}
 	processInfo.User = user
+	processInfo.ElapsedSeconds = getProcessElapsedSeconds(processInfo.PID)
 
 	return processInfo
 }

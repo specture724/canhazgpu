@@ -17,6 +17,9 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>]
 - `--gpu-ids`: Specific GPU IDs to reserve (comma-separated, e.g., 1,3,5)
 - `--duration, -d`: How long to reserve the GPUs
 - `--short, -s`: Output only GPU IDs (for use with command substitution)
+- `--idle-timeout`: Release the reservation if no GPU usage is detected for this long (default: 15m, `0` disables)
+- `--start`: Book the GPUs for a future time window instead of reserving now
+- `--end`: End of that window (defaults to `--duration` after the start)
 
 !!! note "GPU Selection"
     - Use `--gpus` to let canhazgpu select GPUs using the LRU algorithm
@@ -35,6 +38,41 @@ canhazgpu supports flexible duration formats:
 | `0.5h` | 30 minutes (decimal) | `--duration 0.5h` |
 | `90m` | 90 minutes | `--duration 90m` |
 | `3.5d` | 3.5 days | `--duration 3.5d` |
+
+## Idle Reservations Are Released
+
+A manual reservation that shows no GPU activity for 15 minutes is released automatically, so a forgotten reservation does not keep GPUs away from other people:
+
+```bash
+# Default: dropped after 15 minutes without GPU usage
+canhazgpu reserve --gpus 1 --duration 8h
+
+# More grace for a slow start-up
+canhazgpu reserve --gpus 1 --duration 8h --idle-timeout 1h
+
+# Disable idle detection for this reservation
+canhazgpu reserve --gpus 1 --duration 8h --idle-timeout 0
+```
+
+The clock starts when the reservation is made and resets whenever usage is detected, and `canhazgpu status` shows the countdown. `run` reservations are not affected — they end with their process.
+
+**[→ Idle Reservation Timeout](features-idle-timeout.md)**
+
+## Booking a Time Slot
+
+With `--start`, `reserve` claims a future window instead of GPUs right now, like booking a meeting room:
+
+```bash
+# 14:00 to 16:00 today
+canhazgpu reserve --start 14:00 --end 16:00 --gpus 2
+
+# Four hours tomorrow morning
+canhazgpu reserve --start 'tomorrow 09:00' --duration 4h --gpus 8
+```
+
+`canhazgpu schedule` prints the day's booking sheet. GPUs held by a booking are not handed out to reservations that would still be using them when the window starts.
+
+**[→ Scheduled Bookings](usage-schedule.md)**
 
 ## Common Examples
 

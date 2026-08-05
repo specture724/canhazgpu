@@ -8,14 +8,17 @@ This is `canhazgpu`, a GPU reservation tool for single host shared development s
 
 ## Architecture
 
-The tool is a Go application structured as a CLI with internal packages that implements eight main commands:
+The tool is a Go application structured as a CLI with internal packages that implements eleven main commands:
 - `admin`: Initialize and configure the GPU pool with optional --force flag and --provider selection
 - `status`: Show current GPU allocation status with automatic provider-specific validation
 - `run`: Reserve GPU(s) and execute a command with `CUDA_VISIBLE_DEVICES` set (blocks if GPUs unavailable)
-- `reserve`: Manually reserve GPU(s) for a specified duration (blocks if GPUs unavailable)
+- `reserve`: Manually reserve GPU(s) for a specified duration, or book a future time window with --start (blocks if GPUs unavailable)
 - `release`: Release all manually reserved GPUs for the current user
 - `report`: Generate GPU reservation reports showing historical reservation patterns by user
 - `queue`: Show the GPU reservation queue with wait times and allocation progress
+- `schedule`: Show the day's GPU booking schedule as a grid, and cancel bookings
+- `guard`: Long-running daemon that warns (and optionally terminates) processes bypassing the reservation system, and performs periodic maintenance
+- `violations`: Show current and historical GPU usage that bypassed reservations
 - `web`: Start a web server providing a dashboard for real-time monitoring and reports
 
 ### Core Components
@@ -25,6 +28,9 @@ The tool is a Go application structured as a CLI with internal packages that imp
 - **GPU Allocation Logic**: Tracks GPU state with JSON objects containing user, timestamps, heartbeat data, and reservation types
 - **Heartbeat System**: Background goroutine sends periodic heartbeats (60s interval) to maintain run-type reservations
 - **Auto-cleanup**: GPUs are automatically released when heartbeat expires (15 min timeout), manual reservations expire, or processes terminate
+- **Idle Timeout**: Manual reservations with no detected GPU usage for their idle timeout (default 15 min) are released automatically; run-type reservations are exempt since they end with their process
+- **Scheduled Bookings**: Meeting-room style bookings claim specific GPUs for a future window, block conflicting reservations beforehand, and preempt whatever still holds those GPUs when the window starts
+- **Guard/Enforcement**: Optional daemon (`canhazgpu guard`) compares process owners against reservation holders, warns offenders by writing into their process's stderr and terminals, escalates to SIGINT/SIGTERM/SIGKILL with `--enforce`, and records violations for reporting
 - **Unreserved Usage Detection**: Provider-specific integration detects GPUs in use without proper reservations
 - **User Accountability**: Process ownership detection identifies which users are running unreserved processes
 - **MRU-per-User Allocation**: Most Recently Used per user strategy provides GPU affinity with LRU fallback for fair distribution
@@ -91,7 +97,7 @@ sudo ln -s /usr/local/bin/canhazgpu /usr/local/bin/chg
 # Generate reservation report for last 7 days
 ./build/canhazgpu report --days 7
 
-# Customize memory threshold for GPU usage detection (default: 1024 MB)
+# Customize memory threshold for GPU usage detection (default: 100 MB)
 ./build/canhazgpu status --memory-threshold 512
 ./build/canhazgpu run --memory-threshold 2048 --gpus 1 -- python train.py
 
@@ -111,6 +117,31 @@ sudo ln -s /usr/local/bin/canhazgpu /usr/local/bin/chg
 # Check the reservation queue
 ./build/canhazgpu queue
 ./build/canhazgpu queue --json
+
+# Idle timeout: release a manual reservation nobody uses (default 15m, 0 disables)
+./build/canhazgpu reserve --gpus 1 --duration 8h --idle-timeout 1h
+./build/canhazgpu reserve --gpus 1 --duration 8h --idle-timeout 0
+
+# Book a future time window (meeting-room style)
+./build/canhazgpu reserve --start 14:00 --end 16:00 --gpus 2
+./build/canhazgpu reserve --start 'tomorrow 09:00' --duration 4h --gpu-ids 0,1
+
+# Show the booking schedule and cancel a booking
+./build/canhazgpu schedule
+./build/canhazgpu schedule --date tomorrow --days 3
+./build/canhazgpu schedule --json
+./build/canhazgpu schedule --cancel 4f89853e
+
+# Guard: warn (and optionally terminate) processes bypassing reservations
+./build/canhazgpu guard                    # warn only, scan every 15s
+./build/canhazgpu guard --once             # single scan, for cron
+./build/canhazgpu guard --enforce --dry-run
+sudo ./build/canhazgpu guard --enforce     # root needed to reach other users
+
+# Inspect violations
+./build/canhazgpu violations
+./build/canhazgpu violations --json
+./build/canhazgpu violations --history --days 7
 ```
 
 ### GPU Provider Examples
@@ -159,9 +190,15 @@ redis-cli get "canhazgpu:provider"
 │   │   ├── reserve.go              # reserve command implementation
 │   │   ├── release.go              # release command implementation
 │   │   ├── report.go               # report command implementation
-│   │   └── queue.go                # queue command implementation
+│   │   ├── queue.go                # queue command implementation
+│   │   ├── schedule.go             # schedule command (booking grid, cancellation)
+│   │   ├── guard.go                # guard command (monitoring daemon)
+│   │   └── violations.go           # violations command
 │   ├── gpu/                        # GPU management logic
-│   │   ├── allocation.go           # MRU-per-user allocation and coordination
+│   │   ├── allocation.go           # MRU-per-user allocation, maintenance, idle timeout
+│   │   ├── booking.go              # Scheduled bookings: creation, activation, preemption
+│   │   ├── guard.go                # Violation detection, warning escalation, termination
+│   │   ├── notify.go               # Warning delivery channels (process stderr, tty, log, wall)
 │   │   ├── validation.go           # GPU usage validation and process detection
 │   │   ├── model_detection.go      # AI model detection from process commands
 │   │   ├── heartbeat.go            # Background heartbeat system
@@ -194,7 +231,7 @@ redis-cli get "canhazgpu:provider"
 - `DetectAllGPUUsage()` in `internal/gpu/provider.go`: Uses provider-specific commands to query actual GPU processes and memory usage
 - `GetProcessOwner()` in `internal/gpu/validation.go`: Identifies process owners via /proc filesystem or ps command
 - Unreserved usage detection excludes GPUs from allocation pool automatically
-- Configurable memory threshold (default: 1024 MB) determines if GPU is considered "in use" via --memory-threshold flag
+- Configurable memory threshold (default: 100 MB) determines if GPU is considered "in use" via --memory-threshold flag
 - **Model Detection**: `DetectModelFromProcesses()` in `internal/gpu/model_detection.go` identifies running AI models:
   - **vLLM-specific detection**: Recognizes vLLM serve commands with positional or --model arguments
   - **Generic --model detection**: Detects `--model value` or `--model=value` patterns in any command
@@ -211,10 +248,30 @@ redis-cli get "canhazgpu:provider"
 ### Reservation Types
 
 - **Run-type**: Maintained by heartbeat, auto-released when process ends
-- **Manual-type**: Time-based expiry, explicit release required
+- **Manual-type**: Time-based expiry, explicit release required, released early when idle (see below)
+- **Bookings**: Future time windows (`reserve --start`) that activate into manual reservations
 - `LastReleased` timestamp tracking for global LRU fallback allocation
 - Usage history tracking for MRU-per-user preferences  
 - Support for flexible duration formats (30m, 2h, 1d) via `ParseDuration()`
+
+### Maintenance Pass, Idle Timeout and Bookings
+
+- `CleanupExpiredReservations()` in `internal/gpu/allocation.go` is the shared maintenance hook every command runs before reading or handing out GPUs. It detects GPU usage once (cached for 1s), activates due bookings, releases expired/stale/idle reservations, and prunes finished bookings
+- Idle timeout: manual reservations store `idle_timeout` (seconds) and `last_activity`; the maintenance pass refreshes `last_activity` whenever the **holder's own** usage is observed (`IsReservationHolderActive()` in `validation.go` attributes usage by process owner) and releases the reservation once `now - last_activity` exceeds the timeout. Skipped entirely when usage detection fails or cannot be attributed, so unverifiable reservations are never released
+- `--idle-timeout` on `reserve` (default 15m, `0` disables); run-type reservations never carry one
+- Bookings (`internal/gpu/booking.go`): GPUs are chosen at booking time; `applyBookingProtection()` excludes booked GPUs from allocation for the window a reservation would cover (`ExpiryTime`, or `--booking-protection-window` ahead for run-type); `activateDueBookings()` preempts remaining holders and writes a manual reservation expiring at the window's end
+- Releasing a booked GPU (`release`, idle timeout, expiry, `schedule --cancel`) marks the booking completed
+
+### Guard and Enforcement
+
+- `internal/gpu/guard.go`: `Guard.RunOnce()` is one scan — maintenance, usage detection, violation reconciliation, then warn or terminate. `Guard.Run()` loops on `--interval` while holding the singleton guard lock
+- `classifyProcess()` compares each process's owner against the reservation account (`ReservationAccount()`: `ActualUser`, falling back to `User`): no reservation → `unreserved`, different owner → `foreign`
+- `status` shows the same condition: `DetectForeignUsage()` fills `ForeignUsers/Processes/MemoryMB` on `GPUStatusInfo`, the STATUS cell renders `⚠ FOREIGN`, and DETAILS gains `used by <user> (<n>MB)`. The JSON `status` stays `IN_USE` for compatibility, with the detail in `foreign_*` fields
+- Violations carry both `holder` (display name, for messages) and `holder_account` (OS account, used to actually reach the holder)
+- False-positive protection: `--grace` (60s), `--confirmations` (2 scans), allow lists (`root` and display/monitoring tools by default), `--min-memory`, plus the global memory threshold
+- Escalation: warnings every `--warn-interval` up to `--max-warnings`, then (with `--enforce` only) SIGINT → SIGTERM → SIGKILL `--kill-grace` apart. Guarded by `--max-kills-per-hour` (Redis-backed), `--dry-run`, and a rule never to terminate processes with an unidentified owner
+- `internal/gpu/notify.go`: warning channels. `process` writes into `/proc/<pid>/fd/2` only when it resolves to a terminal (never a job's log file or `/dev/null`); `tty` writes to `/dev/pts` entries owned by the offender; both need root for other users
+- The guard's maintenance pass is what makes booking activation and idle reclamation timely without anyone running commands
 
 ### Locking and Concurrency
 
@@ -260,6 +317,19 @@ redis-cli get "canhazgpu:provider"
 - `canhazgpu:queue`: Sorted set of queue entries (score = enqueue timestamp)
 - `canhazgpu:queue:entry:{id}`: JSON object for each queue entry details
 
+### Booking Keys
+
+- `canhazgpu:bookings`: Sorted set of booking IDs (score = start timestamp)
+- `canhazgpu:booking:{id}`: JSON object per booking (`gpu_ids`, `start_time`, `end_time`, `status`, `idle_timeout`, `note`)
+
+### Guard Keys
+
+- `canhazgpu:violations`: Sorted set of open violation IDs (`{gpu}:{pid}`, score = first seen)
+- `canhazgpu:violation:{gpu}:{pid}`: JSON object per open violation (24h TTL)
+- `canhazgpu:violation_history_sorted`: Resolved violations (90-day expiry)
+- `canhazgpu:guard:lock`: Singleton lock held by the running guard (`host:pid`, refreshed each scan)
+- `canhazgpu:guard:kills`: Sorted set of terminations, used for the hourly circuit breaker
+
 ### GPU State Objects (`canhazgpu:gpu:{id}`)
 
 Available state: `{'last_released': timestamp}` or `{}`
@@ -272,7 +342,10 @@ Reserved state:
   "start_time": timestamp,
   "last_heartbeat": timestamp,
   "type": "run|manual",
-  "expiry_time": timestamp  // Only for manual reservations
+  "expiry_time": timestamp,   // Only for manual reservations
+  "idle_timeout": seconds,    // Only for manual reservations with idle detection
+  "last_activity": timestamp, // Last time real GPU usage was observed
+  "booking_id": "uuid"        // Set when a scheduled booking created this reservation
 }
 ```
 

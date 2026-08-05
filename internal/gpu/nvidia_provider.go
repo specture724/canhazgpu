@@ -52,12 +52,13 @@ func (n *NVIDIAProvider) DetectGPUUsage(ctx context.Context) (map[int]*types.GPU
 	usage := make(map[int]*types.GPUUsage)
 	for _, info := range gpuInfo {
 		gpuUsage := &types.GPUUsage{
-			GPUID:     info.index,
-			MemoryMB:  info.memoryMB,
-			Processes: []types.GPUProcessInfo{},
-			Users:     make(map[string]bool),
-			Provider:  "NVIDIA",
-			Model:     info.model,
+			GPUID:              info.index,
+			MemoryMB:           info.memoryMB,
+			UtilizationPercent: info.utilizationPercent,
+			Processes:          []types.GPUProcessInfo{},
+			Users:              make(map[string]bool),
+			Provider:           "NVIDIA",
+			Model:              info.model,
 		}
 
 		if gpuProcesses, exists := processes[info.index]; exists {
@@ -94,16 +95,17 @@ func (n *NVIDIAProvider) GetGPUCount(ctx context.Context) (int, error) {
 }
 
 type gpuInfoEntry struct {
-	index    int
-	uuid     string
-	model    string
-	memoryMB int
+	index              int
+	uuid               string
+	model              string
+	memoryMB           int
+	utilizationPercent int
 }
 
 // queryGPUInfo queries GPU index, UUID, model name, and memory usage in a single nvidia-smi call.
 func (n *NVIDIAProvider) queryGPUInfo(ctx context.Context) ([]gpuInfoEntry, error) {
 	cmd := exec.CommandContext(ctx, "nvidia-smi",
-		"--query-gpu=index,gpu_uuid,name,memory.used",
+		"--query-gpu=index,gpu_uuid,name,memory.used,utilization.gpu",
 		"--format=csv,noheader,nounits")
 
 	output, err := cmd.Output()
@@ -120,7 +122,7 @@ func (n *NVIDIAProvider) queryGPUInfo(ctx context.Context) ([]gpuInfoEntry, erro
 		}
 
 		fields := strings.Split(line, ", ")
-		if len(fields) < 4 {
+		if len(fields) < 5 {
 			continue
 		}
 
@@ -139,11 +141,16 @@ func (n *NVIDIAProvider) queryGPUInfo(ctx context.Context) ([]gpuInfoEntry, erro
 			continue
 		}
 
+		// utilization.gpu can be "N/A" on some systems (e.g. virtual GPUs);
+		// treat an unparseable value as 0
+		utilizationPercent, _ := strconv.Atoi(strings.TrimSpace(fields[4]))
+
 		entries = append(entries, gpuInfoEntry{
-			index:    index,
-			uuid:     uuid,
-			model:    model,
-			memoryMB: memoryMB,
+			index:              index,
+			uuid:               uuid,
+			model:              model,
+			memoryMB:           memoryMB,
+			utilizationPercent: utilizationPercent,
 		})
 	}
 
@@ -207,10 +214,11 @@ func (n *NVIDIAProvider) queryGPUProcesses(ctx context.Context, uuidMap map[stri
 		}
 
 		procInfo := types.GPUProcessInfo{
-			PID:         pid,
-			ProcessName: processName,
-			User:        user,
-			MemoryMB:    memoryMB,
+			PID:            pid,
+			ProcessName:    processName,
+			User:           user,
+			MemoryMB:       memoryMB,
+			ElapsedSeconds: getProcessElapsedSeconds(pid),
 		}
 
 		processes[gpuID] = append(processes[gpuID], procInfo)

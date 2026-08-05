@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/russellb/canhazgpu/internal/types"
 	"github.com/russellb/canhazgpu/internal/utils"
@@ -81,6 +82,94 @@ func getProcessOwnerFromPS(pid int) (string, error) {
 	return user, nil
 }
 
+// getProcessElapsedSeconds reports how long a process has been running, or 0
+// when the duration cannot be determined. The primary source is /proc (process
+// start time vs. system uptime); ps -o etimes is the fallback.
+func getProcessElapsedSeconds(pid int) int64 {
+	if seconds, err := processElapsedFromProc(pid); err == nil {
+		return seconds
+	}
+	if seconds, err := processElapsedFromPS(pid); err == nil {
+		return seconds
+	}
+	return 0
+}
+
+// processElapsedFromProc reads /proc/<pid>/stat and /proc/uptime (Linux).
+func processElapsedFromProc(pid int) (int64, error) {
+	stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	uptime, err := os.ReadFile("/proc/uptime")
+	if err != nil {
+		return 0, err
+	}
+
+	// comm may contain spaces and parentheses, so split after the last ')'.
+	// Field 22 (starttime, in clock ticks since boot) is index 19 after that.
+	rest := string(stat)
+	if idx := strings.LastIndexByte(rest, ')'); idx >= 0 {
+		rest = rest[idx+1:]
+	}
+	fields := strings.Fields(rest)
+	if len(fields) < 20 {
+		return 0, fmt.Errorf("unexpected /proc stat format")
+	}
+	startTicks, err := strconv.ParseInt(fields[19], 10, 64)
+	if err != nil {
+		return 0, err
+	}
+
+	upParts := strings.Fields(string(uptime))
+	if len(upParts) == 0 {
+		return 0, fmt.Errorf("unexpected /proc/uptime format")
+	}
+	upSeconds, err := strconv.ParseFloat(upParts[0], 64)
+	if err != nil {
+		return 0, err
+	}
+
+	// Linux USER_HZ is 100 on virtually every distribution.
+	elapsed := upSeconds - float64(startTicks)/100.0
+	if elapsed < 0 {
+		elapsed = 0
+	}
+	return int64(elapsed), nil
+}
+
+// processElapsedFromPS uses ps -o etimes to get elapsed seconds.
+func processElapsedFromPS(pid int) (int64, error) {
+	cmd := exec.Command("ps", "-o", "etimes=", "-p", strconv.Itoa(pid))
+	output, err := cmd.Output()
+	if err != nil {
+		return 0, err
+	}
+	seconds, err := strconv.ParseInt(strings.TrimSpace(string(output)), 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	if seconds < 0 {
+		seconds = 0
+	}
+	return seconds, nil
+}
+
+// formatProcessInfo renders the processes using a GPU as
+// "PID 12345 (python, 2h 3m), PID 67890 (jupyter, 5m)".
+func formatProcessInfo(processes []types.GPUProcessInfo) string {
+	parts := make([]string, 0, len(processes))
+	for _, proc := range processes {
+		desc := fmt.Sprintf("PID %d (%s", proc.PID, proc.ProcessName)
+		if proc.ElapsedSeconds > 0 {
+			desc += ", " + utils.FormatDurationShort(time.Duration(proc.ElapsedSeconds)*time.Second)
+		}
+		desc += ")"
+		parts = append(parts, desc)
+	}
+	return strings.Join(parts, ", ")
+}
+
 // GetUnreservedGPUs returns list of GPU IDs that are in use without proper reservations
 func GetUnreservedGPUs(ctx context.Context, usage map[int]*types.GPUUsage, memoryThreshold int) []int {
 	var unreserved []int
@@ -96,5 +185,87 @@ func GetUnreservedGPUs(ctx context.Context, usage map[int]*types.GPUUsage, memor
 
 // IsGPUInUnreservedUse checks if a specific GPU is in unreserved use
 func IsGPUInUnreservedUse(usage *types.GPUUsage, memoryThreshold int) bool {
+	return IsGPUBusy(usage, memoryThreshold)
+}
+
+// IsGPUBusy reports whether real usage was detected on a GPU, independently of
+// who is responsible for it
+func IsGPUBusy(usage *types.GPUUsage, memoryThreshold int) bool {
 	return usage != nil && usage.MemoryMB > memoryThreshold
+}
+
+// ReservationAccount returns the OS account a reservation belongs to. The
+// display name is only a fallback: it may be a custom --user value.
+func ReservationAccount(state *types.GPUState) string {
+	if state.ActualUser != "" {
+		return state.ActualUser
+	}
+	return state.User
+}
+
+// IsReservationHolderActive reports whether the user holding a reservation is
+// the one actually using the GPU. Usage by anybody else must not keep the
+// reservation alive: otherwise somebody squatting on a reserved GPU would hold
+// it open indefinitely on the holder's behalf.
+//
+// When usage cannot be attributed - no process list, or processes whose owner
+// could not be determined - the reservation is given the benefit of the doubt,
+// so an unverifiable reservation is never released as idle.
+func IsReservationHolderActive(state *types.GPUState, usage *types.GPUUsage, memoryThreshold int) bool {
+	if !IsGPUBusy(usage, memoryThreshold) {
+		return false
+	}
+
+	if len(usage.Processes) == 0 {
+		return true
+	}
+
+	holder := ReservationAccount(state)
+	for _, process := range usage.Processes {
+		if process.User == "" || process.User == holder {
+			return true
+		}
+	}
+
+	return false
+}
+
+// ForeignUsage describes GPU usage on a reserved GPU that belongs to somebody
+// other than the reservation holder
+type ForeignUsage struct {
+	Users     []string
+	Processes int
+	MemoryMB  int
+}
+
+// DetectForeignUsage reports processes running on a reserved GPU that do not
+// belong to the reservation holder. It returns nil when there are none.
+func DetectForeignUsage(state *types.GPUState, usage *types.GPUUsage) *ForeignUsage {
+	if state.User == "" || usage == nil {
+		return nil
+	}
+
+	holder := ReservationAccount(state)
+	foreign := &ForeignUsage{}
+	seen := make(map[string]bool)
+
+	for _, process := range usage.Processes {
+		// An unidentified owner might well be the holder's own process
+		if process.User == "" || process.User == holder {
+			continue
+		}
+
+		foreign.Processes++
+		foreign.MemoryMB += process.MemoryMB
+		if !seen[process.User] {
+			seen[process.User] = true
+			foreign.Users = append(foreign.Users, process.User)
+		}
+	}
+
+	if foreign.Processes == 0 {
+		return nil
+	}
+
+	return foreign
 }

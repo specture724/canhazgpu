@@ -1,300 +1,297 @@
-# Quick Start Guide
+# Team Quick Start
 
-This guide will get you up and running with canhazgpu in just a few minutes.
+A practical guide for everyone sharing a GPU host with canhazgpu. It covers the commands you will use most days: `status`, `run`, `reserve`, `schedule`, `queue`, `release`, plus the team habits that keep the box productive.
 
-## 1. Initialize the GPU Pool
+## What canhazgpu does
 
-First, tell canhazgpu how many GPUs are available on your system:
+canhazgpu is a cooperative GPU reservation system for one shared host:
 
-```bash
-canhazgpu admin --gpus 8
-```
+- Every GPU has a **reservation** in Redis (run-type, manual, or a future booking).
+- `run` ties a reservation to a process and cleans it up automatically.
+- `reserve` gives you a time-boxed reservation for interactive work.
+- `schedule` shows future bookings so you can plan ahead.
+- `guard` (usually run as a service) warns people who use GPUs without a reservation and can enforce policy.
 
-!!! info "Finding GPU Count"
-    Use the appropriate command for your GPU type:
-    
-    **NVIDIA GPUs**: `nvidia-smi -L | wc -l`
-    
-    **AMD GPUs**: 
-    ```bash
-    # With jq (if available)
-    amd-smi list --json | jq 'length'
-    
-    # Without jq (alternative)
-    amd-smi list | grep -c "^GPU:"
-    ```
+## 0. First-time setup (admin only)
 
-You can also specify the GPU provider explicitly:
+If the host was already set up, skip this section. One-time initialization:
 
 ```bash
-# Auto-detect provider (default)
-canhazgpu admin --gpus 8
+# NVIDIA host
+canhazgpu admin --gpus $(nvidia-smi -L | wc -l)
 
-# Explicitly specify NVIDIA
-canhazgpu admin --gpus 8 --provider nvidia
-
-# Explicitly specify AMD  
-canhazgpu admin --gpus 8 --provider amd
+# AMD host
+canhazgpu admin --gpus $(amd-smi list --json | jq 'length')
 ```
 
-If you need to change the GPU count later:
+Do not run this on a busy host without `--force`; it resets all reservations.
 
-```bash
-canhazgpu admin --gpus 4 --force
-```
-
-## 2. Check Status
-
-View the current GPU allocation status:
+## 1. Look before you leap: status
 
 ```bash
 canhazgpu status
 ```
 
-Initially, all GPUs should show as `AVAILABLE`.
-
-## 3. Reserve and Run a Job
-
-Use the `run` command to reserve GPUs and execute a command:
-
-```bash
-# Reserve 1 GPU and run a Python script
-canhazgpu run --gpus 1 -- python train.py
-
-# Reserve specific GPUs by ID
-canhazgpu run --gpu-ids 1,3 -- python train.py
-
-# Reserve 2 GPUs for distributed training
-canhazgpu run --gpus 2 -- python -m torch.distributed.launch train.py
+```
+GPU  STATUS      USER     DURATION    TYPE    DETAILS                  MEMORY          NOTE  UTIL
+---  ------      ----     --------    ----    -------                  ----------      ----  ----
+0    AVAILABLE   -        -           -       free for 1h 2m 30s       1MB used        -     0%
+1    IN_USE      alice    0h 15m 30s  RUN     heartbeat 5s ago, processes: PID 123 (2h3m)  8452MB, 1 processes   -     87%
+2    IN_USE      bob      0h 30m 0s   MANUAL  expires in 3h 30m 0s     no usage detected  -   5%
+3    UNRESERVED  carol    -           -       used by PID 123 (2h3m)  2048MB, 1 processes  -  42%
 ```
 
-The `run` command will:
+- `AVAILABLE` — free to reserve.
+- `IN_USE` with type `RUN` — somebody's job; ends when the process ends.
+- `IN_USE` with type `MANUAL` — somebody reserved it for a window.
+- `UNRESERVED` — someone is using a GPU without a reservation; this GPU is excluded from allocation and `guard` may act on it.
+- `⚠ FOREIGN` — GPU is reserved, but the processes belong to someone else.
 
-- Reserve the requested number of GPUs
-- Set `CUDA_VISIBLE_DEVICES` to the allocated GPU IDs
-- Run your command
-- Automatically release GPUs when the command finishes
-
-## 4. Manual Reservations
-
-Reserve GPUs without running a command immediately:
+By default DETAILS only shows the PID and how long the process has been running. Add `-v` for process names (up to two) or `-vv` for all:
 
 ```bash
-# Reserve 1 GPU for 8 hours (default)
-canhazgpu reserve
+canhazgpu status -v
+canhazgpu status -vv
+```
 
-# Reserve 2 GPUs for 4 hours
-canhazgpu reserve --gpus 2 --duration 4h
+Machine-readable form for scripts:
 
-# Reserve specific GPU IDs
+```bash
+canhazgpu status --json
+canhazgpu status --json | jq -r '.[] | select(.status == "AVAILABLE") | .gpu_id'
+```
+
+## 2. Run a job: `run`
+
+`run` is the recommended way to start anything GPU-heavy. It reserves GPUs, sets `CUDA_VISIBLE_DEVICES`, runs your command, and releases the GPUs when the command exits. Use the `--` separator so canhazgpu does not try to parse your command's flags:
+
+```bash
+canhazgpu run --gpus 1 -- python train.py
+canhazgpu run --gpus 2 -- python -m torch.distributed.launch --nproc_per_node=2 train.py
+canhazgpu run --gpu-ids 2,3 -- python train.py
+canhazgpu run --gpus 1 -- python            # interactive REPL works too
+```
+
+Common options:
+
+| Option | Meaning |
+|---|---|
+| `--gpus N` | Number of GPUs (default 1) |
+| `--gpu-ids 1,3` | Specific GPUs; waits until exactly those are free |
+| `--timeout 4h` | Kill the job (SIGINT, then SIGKILL) after 4h |
+| `--wait 1h` | Wait up to 1h in the queue, then fail |
+| `--nonblock` | Fail immediately if GPUs are not available |
+| `--note "..."` | Label the reservation; shows up in `status` |
+
+If GPUs are busy, `run` waits in a first-come-first-served queue by default and prints progress. Ctrl+C while waiting removes your queue entry.
+
+```bash
+canhazgpu queue                # see who is waiting
+canhazgpu run --wait 30m --gpus 2 -- python train.py
+```
+
+Best practice for a long job:
+
+```bash
+canhazgpu run --gpus 2 --timeout 12h --note "bert-finetune" -- \
+  python train.py --epochs 100 --save-every 10
+```
+
+## 3. Reserve for interactive work: `reserve`
+
+Use `reserve` when you need GPUs for a while without running a single command: notebooks, debugging, multi-step experiments. The reservation is **manual**: it has a duration, does not set `CUDA_VISIBLE_DEVICES` for you, and stays until it expires, goes idle, or you release it.
+
+```bash
+# 1 GPU for 4 hours
+canhazgpu reserve --gpus 1 --duration 4h
+
+# Specific GPUs
 canhazgpu reserve --gpu-ids 0,2 --duration 2h
 
-# Reserve for different time periods
-canhazgpu reserve --duration 30m    # 30 minutes
-canhazgpu reserve --duration 2d     # 2 days
-```
+# Reserve and set the environment in one step
+export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --duration 3h --short)
 
-## 5. Release Manual Reservations
-
-When you're done with manually reserved GPUs:
-
-```bash
-canhazgpu release
-```
-
-!!! note "Automatic vs Manual Release"
-    - `run` command: GPUs are automatically released when the command ends
-    - `reserve` command: GPUs must be manually released or will expire after the duration
-
-## 6. Monitor Usage
-
-Check the status regularly to see GPU usage:
-
-```bash
-# Table output (human-readable)
-canhazgpu status
-
-# JSON output (for scripts and APIs)
-canhazgpu status --json
-```
-
-Example output:
-```
-GPU  STATUS      USER      DURATION     TYPE    MODEL                    DETAILS                  VALIDATION
----  ------      ----      --------     ----    -----                    -------                  ----------
-0    AVAILABLE   -         -            -       -                        free for 2h 30m 15s     1MB used
-1    IN_USE      alice     0h 15m 30s   RUN     meta-llama/Llama-2-13b-chat-hf  heartbeat 0h 0m 5s ago   8452MB, 1 processes
-2    UNRESERVED  user bob  -            -       mistralai/Mistral-7B-Instruct-v0.1        1024MB used by PID 12345 (python3)  -
-3    IN_USE      charlie   1h 2m 15s    MANUAL  -                        expires in 3h 15m 45s   no usage detected
-```
-
-!!! info "Understanding the Output"
-    The status shows [validated GPU usage](features-validation.md) and can detect [unreserved usage](features-unreserved.md). GPUs are allocated using the [LRU strategy](features-lru.md) for fair distribution.
-
-## 7. Generate GPU Reservation Reports
-
-View GPU reservation patterns over time:
-
-```bash
-# Last 30 days (default)
-canhazgpu report
-
-# Last 7 days
-canhazgpu report --days 7
-
-# Last 24 hours
-canhazgpu report --days 1
-```
-
-## 8. Web Dashboard
-
-For continuous monitoring, start the web dashboard:
-
-```bash
-# Start on default port 8080
-canhazgpu web
-
-# Start on custom port
-canhazgpu web --port 3000
-```
-
-Then open http://localhost:8080 in your browser to see:
-- Real-time GPU status
-- Interactive reservation reports
-- Visual allocation indicators
-
-![Web Dashboard](images/web-screenshot.png)
-
-## Configuration
-
-### Using Configuration Files
-
-Create a configuration file to avoid specifying common options repeatedly:
-
-```bash
-# Create configuration file
-cat > ~/.canhazgpu.yaml <<EOF
-redis:
-  host: localhost
-  port: 6379
-  db: 0
-memory:
-  threshold: 512
-EOF
-
-# Commands will now use these defaults
-canhazgpu status  # Uses threshold of 512 MB
-```
-
-### Environment Variables
-
-Set configuration via environment variables:
-
-```bash
-export CANHAZGPU_MEMORY_THRESHOLD=512
-export CANHAZGPU_REDIS_HOST=redis.example.com
-
-canhazgpu status  # Uses environment variables
-```
-
-### Custom Memory Threshold
-
-Adjust when a GPU is considered "in use":
-
-```bash
-# Lower threshold - detect lighter GPU usage
-canhazgpu status --memory-threshold 256
-
-# Higher threshold - ignore small allocations  
-canhazgpu run --memory-threshold 2048 --gpus 1 -- python train.py
-```
-
-## Common Patterns
-
-### Long-Running Training
-```bash
-# Start a long training job
-canhazgpu run --gpus 2 -- python train.py --epochs 100
-```
-
-### Interactive Development
-```bash
-# Reserve GPUs for development session
-canhazgpu reserve --gpus 1 --duration 4h
-# Note the GPU ID from output, e.g., "Reserved 1 GPU(s): [3]"
-
-# Manually set CUDA_VISIBLE_DEVICES
-export CUDA_VISIBLE_DEVICES=3
-
-# Use the GPU in your development environment
-
-# When done
-canhazgpu release
-```
-
-### Jupyter Notebooks
-```bash
-# Reserve GPU for notebook session
-canhazgpu reserve --gpus 1 --duration 2h
-# Note the GPU ID from output, e.g., "Reserved 1 GPU(s): [2]"
-
-# Set environment variable
-export CUDA_VISIBLE_DEVICES=2
-
-# Start Jupyter with the reserved GPU
 jupyter notebook
+```
 
-# Release when done
-canhazgpu release
+Release it as soon as you are done:
+
+```bash
+canhazgpu release                 # release all your manual reservations
+canhazgpu release --gpu-ids 0,2   # release specific GPUs (also works for run-type)
+```
+
+Notes:
+
+- The default duration is 30m — always pass `--duration` explicitly.
+- By default a manual reservation that shows **no GPU usage for 15 minutes** is released automatically (`--idle-timeout`, `0` disables). This is a feature: forgotten reservations return to the pool. If you are loading a big model before training, give yourself more room: `--idle-timeout 1h`.
+- `release` without `--gpu-ids` releases **all** of your manual reservations, so scripts should use `--gpu-ids`.
+
+## 4. Plan ahead: `schedule`
+
+Book a future time window like a meeting room with `reserve --start`, then look at the day with `schedule`:
+
+```bash
+canhazgpu schedule                       # today's grid
+canhazgpu schedule --date tomorrow       # tomorrow
+canhazgpu schedule --days 5              # the rest of the week
+
+# 2 GPUs from 14:00 to 16:00 today
+canhazgpu reserve --start 14:00 --end 16:00 --gpus 2 --note "demo"
+
+# 4 hours from tomorrow 09:30
+canhazgpu reserve --start 'tomorrow 09:30' --duration 4h --gpus 8
+
+# Cancel your booking
+canhazgpu schedule --cancel 4f89853e
+```
+
+How bookings behave:
+
+- GPUs are chosen at booking time and shown on the schedule.
+- While a booking is pending, ad-hoc `run`/`reserve` requests **avoid** those GPUs (30 minutes ahead for `run` by default).
+- When the window starts, the booking **releases whoever currently holds the GPU**. It releases the reservation, not the process — warn people before booking over their work.
+- `--end` is relative to `--start`, so `--start 22:00 --end 02:00` works.
+- Cancel early if plans change; cancelling an active booking releases its GPUs immediately.
+
+## 5. Check history: `report`
+
+```bash
+canhazgpu report          # last 30 days
+canhazgpu report --days 7
+```
+
+## 6. Know the watchdog: guard and violations
+
+On a managed host, `canhazgpu guard` usually runs as a service. It:
+
+- warns people who use GPUs without a reservation (writes into their terminal);
+- with `--enforce`, terminates them after repeated warnings (SIGINT → SIGTERM → SIGKILL);
+- keeps the system tidy by activating bookings and releasing stale reservations.
+
+See what it has caught:
+
+```bash
+canhazgpu violations              # currently open violations
+canhazgpu violations --history    # resolved ones, last 7 days
+```
+
+If your job shows up there, you forgot to reserve — do not argue with the process that is now telling you politely.
+
+## 7. Watch on a screen: `web`
+
+```bash
+canhazgpu web --port 8080
+# open http://localhost:8080
+```
+
+The dashboard shows live status, the queue, and reports, and it refreshes automatically.
+
+## Decision table
+
+| What you need | Use |
+|---|---|
+| Run one command on GPUs now | `canhazgpu run --gpus N -- ...` |
+| Interactive session, notebooks, multi-step work | `canhazgpu reserve --duration ...` |
+| A specific GPU | add `--gpu-ids 0,2` |
+| GPUs at a future time | `canhazgpu reserve --start ... --end ...` |
+| See who is waiting | `canhazgpu queue` |
+| See who is using what now | `canhazgpu status` |
+| See usage history | `canhazgpu report --days N` |
+| See policy violations | `canhazgpu violations` |
+| Release manual GPUs | `canhazgpu release [--gpu-ids ...]` |
+
+## Best practices
+
+### Batch jobs: prefer `run`
+
+`run` handles reservation, heartbeat and cleanup for you, and it keeps working over SSH disconnects (the supervisor survives SIGHUP). There is no need to wrap the command in `nohup`:
+
+```bash
+# Good
+canhazgpu run --gpus 2 --timeout 12h --note "finetune-7b" -- ./train.sh
+
+# Unnecessary — nohup adds nothing here
+canhazgpu run --gpus 2 -- nohup ./train.sh
+```
+
+Use `--timeout` instead of hoping the system kills a runaway job.
+
+### Manual reservations: keep them short and precise
+
+```bash
+# BAD: default duration, released only when it expires or goes idle
+canhazgpu reserve --gpus 1
+
+# GOOD: explicit window, explicit idle grace
+canhazgpu reserve --gpus 1 --duration 2h --idle-timeout 30m --note "debugging"
+```
+
+### Scripts: fail fast, clean up precisely
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# For a single command, run does everything:
+canhazgpu run --gpus 2 -- python train.py --epochs 10
+
+# For a multi-step session, reserve explicitly and release by GPU ID:
+export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --duration 3h --short)
+trap 'canhazgpu release --gpu-ids "$CUDA_VISIBLE_DEVICES"' EXIT
+
+python preprocess.py
+python train.py
+python evaluate.py
+```
+
+### Automation: use JSON, not table parsing
+
+```bash
+# Wait until at least one GPU is available, then run
+while ! canhazgpu status --json | jq -e 'any(.[]; .status == "AVAILABLE")' > /dev/null; do
+  sleep 30
+done
+canhazgpu run --gpus 1 -- python train.py
+```
+
+### Team etiquette
+
+1. Check `canhazgpu status` before starting anything.
+2. Always go through `run` or `reserve` — unreserved use shows up as `UNRESERVED`, is excluded from allocation, and triggers guard warnings.
+3. Reserve what you need, not more, and release early.
+4. Tell the team when a booking will preempt someone's GPU.
+5. Use `--note` so others can see what a reservation is for.
+
+## Defaults you can set for yourself
+
+Put shared preferences in `~/.canhazgpu.yaml` instead of typing flags every time:
+
+```yaml
+memory:
+  threshold: 100        # MB above which a GPU counts as "in use"
+run:
+  timeout: "8h"          # default timeout for run jobs
+reserve:
+  duration: "2h"         # your default reservation length
+  idle-timeout: "30m"
 ```
 
 ## Troubleshooting
 
-### "Not enough GPUs available"
-Check the status to see if GPUs are in use:
-```bash
-canhazgpu status
-```
+| Symptom | Fix |
+|---|---|
+| `Not enough GPUs available` | `canhazgpu status`, then `canhazgpu queue`; wait or reduce the request |
+| Command failed | GPUs are released automatically; check the command output |
+| `failed to connect to Redis` | `redis-cli ping`; make sure Redis is up and config points at the right host |
+| Booking over your GPU | Planned in advance; the booking releases the reservation when it starts |
+| Guard warned your process | You used a GPU without a reservation; reserve next time |
 
-If you see `IN USE WITHOUT RESERVATION`, someone is using GPUs without proper reservation.
+## Next steps
 
-### Redis Connection Issues
-Verify Redis is running:
-```bash
-redis-cli ping
-```
-
-Should return `PONG`. If not, start Redis:
-```bash
-sudo systemctl start redis-server
-```
-
-### Permission Issues
-If you get permission errors, ensure:
-- Redis is accessible
-- You have access to `/proc` filesystem
-- nvidia-smi or amd-smi (depending on system) is available
-
-For more detailed troubleshooting, see the [Troubleshooting Guide](admin-troubleshooting.md).
-
-## Programmatic Integration
-
-For scripts and automation, use the JSON output format:
-
-```bash
-# Get available GPUs with jq
-canhazgpu status --json | jq '[.[] | select(.status == "AVAILABLE") | .gpu_id]'
-
-# Check for unreserved usage
-canhazgpu status --json | jq '[.[] | select(.status == "UNRESERVED")]'
-
-# Count total utilization
-canhazgpu status --json | jq 'length as $total | [.[] | select(.status != "AVAILABLE")] | length / $total * 100'
-```
-
-## Next Steps
-
-- **[Installation](installation.md)** - Install canhazgpu via Homebrew, Go, or from source
-- **[Configuration](configuration.md)** - Set up defaults and customize behavior
-- **[Commands Overview](commands.md)** - Learn all available commands in detail
-- **[Usage Patterns](usage-run.md)** - Advanced usage patterns and examples
+- [Commands overview](commands.md)
+- [Running jobs in detail](usage-run.md)
+- [Manual reservations in detail](usage-reserve.md)
+- [Scheduled bookings in detail](usage-schedule.md)
+- [Guard and enforcement](features-guard.md)
+- [Configuration](configuration.md)

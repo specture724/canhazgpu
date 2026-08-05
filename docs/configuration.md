@@ -31,7 +31,28 @@ redis:
 
 # Memory threshold for GPU usage detection (in MB)
 memory:
-  threshold: 1024
+  threshold: 100
+
+# Scheduled bookings
+booking:
+  # How far ahead 'run' reservations avoid GPUs needed by a booking
+  protection_window: "30m"
+
+# Guard: monitoring and enforcement of the reservation system
+guard:
+  interval: "15s"
+  grace: "60s"
+  confirmations: 2
+  warn-interval: "5m"
+  max-warnings: 3
+  enforce: false            # Terminate offenders once warnings are exhausted
+  kill-grace: "30s"
+  max-kills-per-hour: 3
+  channels: ["process", "tty", "log"]
+  log-file: ""
+  exclude-users: ["root"]
+  exclude-commands: ["Xorg", "nvidia-smi", "amd-smi", "dcgm-exporter", "nvidia-persistenced"]
+  notify-holder: true
 
 # Default settings for 'run' command
 run:
@@ -42,6 +63,8 @@ run:
 reserve:
   gpus: 1
   duration: "8h"
+  # Release a manual reservation after this long without GPU usage ("0" disables)
+  idle-timeout: "15m"
 
 # Default settings for 'report' command
 report:
@@ -107,7 +130,7 @@ redis:
   port: 6379
 
 memory:
-  threshold: 1024
+  threshold: 100
 
 # Conservative defaults to encourage sharing
 run:
@@ -189,7 +212,11 @@ redis:
 
 # GPU usage detection threshold
 memory:
-  threshold: 1024
+  threshold: 100
+
+# Scheduled bookings
+booking:
+  protection_window: "30m"  # 'run' avoids GPUs booked within this window
 
 # Run command defaults
 run:
@@ -200,6 +227,7 @@ run:
 reserve:
   gpus: 1
   duration: "8h"
+  idle-timeout: "15m"  # Release reservations nobody uses
 
 # Status and reporting
 report:

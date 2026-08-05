@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/russellb/canhazgpu/internal/types"
+	"github.com/russellb/canhazgpu/internal/utils"
 	"github.com/spf13/cobra"
 	"github.com/spf13/pflag"
 	"github.com/spf13/viper"
@@ -34,7 +35,9 @@ func init() {
 	rootCmd.PersistentFlags().String("redis-host", "localhost", "Redis host")
 	rootCmd.PersistentFlags().Int("redis-port", 6379, "Redis port")
 	rootCmd.PersistentFlags().Int("redis-db", 0, "Redis database")
-	rootCmd.PersistentFlags().Int("memory-threshold", types.MemoryThresholdMB, "Memory threshold in MB to consider a GPU as 'in use' (default: 1024)")
+	rootCmd.PersistentFlags().Int("memory-threshold", types.MemoryThresholdMB, "Memory threshold in MB to consider a GPU as 'in use' (default: 100)")
+	rootCmd.PersistentFlags().String("booking-protection-window", utils.FormatDurationShort(types.DefaultBookingProtectionWindow),
+		"How far ahead reservations without a fixed end time avoid GPUs needed by scheduled bookings")
 
 	if err := viper.BindPFlag("redis.host", rootCmd.PersistentFlags().Lookup("redis-host")); err != nil {
 		panic(fmt.Sprintf("Failed to bind redis-host flag: %v", err))
@@ -48,12 +51,16 @@ func init() {
 	if err := viper.BindPFlag("memory.threshold", rootCmd.PersistentFlags().Lookup("memory-threshold")); err != nil {
 		panic(fmt.Sprintf("Failed to bind memory-threshold flag: %v", err))
 	}
+	if err := viper.BindPFlag("booking.protection_window", rootCmd.PersistentFlags().Lookup("booking-protection-window")); err != nil {
+		panic(fmt.Sprintf("Failed to bind booking-protection-window flag: %v", err))
+	}
 
 	// Set defaults
 	viper.SetDefault("redis.host", "localhost")
 	viper.SetDefault("redis.port", 6379)
 	viper.SetDefault("redis.db", 0)
 	viper.SetDefault("memory.threshold", types.MemoryThresholdMB)
+	viper.SetDefault("booking.protection_window", utils.FormatDurationShort(types.DefaultBookingProtectionWindow))
 }
 
 func initConfig() {
@@ -90,6 +97,14 @@ func initConfig() {
 		RedisDB:         viper.GetInt("redis.db"),
 		MemoryThreshold: viper.GetInt("memory.threshold"),
 		RemoteHosts:     viper.GetStringSlice("remote_hosts"),
+	}
+
+	// An unparseable window falls back to the default rather than disabling
+	// booking protection altogether
+	if window, err := utils.ParseDuration(viper.GetString("booking.protection_window")); err == nil && window > 0 {
+		config.BookingProtectionWindow = window
+	} else {
+		config.BookingProtectionWindow = types.DefaultBookingProtectionWindow
 	}
 }
 

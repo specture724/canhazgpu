@@ -5,17 +5,36 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"sort"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/russellb/canhazgpu/internal/redis_client"
 	"github.com/russellb/canhazgpu/internal/types"
+	"github.com/russellb/canhazgpu/internal/utils"
+)
+
+const (
+	// usageCacheTTL keeps GPU usage detection results for long enough that a
+	// single command (maintenance followed by allocation or status) queries the
+	// GPU provider once instead of twice
+	usageCacheTTL = time.Second
+
+	// activityRefreshInterval limits how often the observed-activity timestamp
+	// of an idle-timeout reservation is written back to Redis
+	activityRefreshInterval = 30 * time.Second
 )
 
 type AllocationEngine struct {
 	client *redis_client.Client
 	config *types.Config
+
+	usageMu     sync.Mutex
+	usageCache  map[int]*types.GPUUsage
+	usageCached time.Time
 }
 
 func NewAllocationEngine(client *redis_client.Client, config *types.Config) *AllocationEngine {
@@ -26,6 +45,28 @@ func NewAllocationEngine(client *redis_client.Client, config *types.Config) *All
 }
 
 func (ae *AllocationEngine) detectGPUUsage(ctx context.Context) (map[int]*types.GPUUsage, error) {
+	ae.usageMu.Lock()
+	if ae.usageCache != nil && time.Since(ae.usageCached) < usageCacheTTL {
+		cached := ae.usageCache
+		ae.usageMu.Unlock()
+		return cached, nil
+	}
+	ae.usageMu.Unlock()
+
+	usage, err := ae.queryGPUUsage(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	ae.usageMu.Lock()
+	ae.usageCache = usage
+	ae.usageCached = time.Now()
+	ae.usageMu.Unlock()
+
+	return usage, nil
+}
+
+func (ae *AllocationEngine) queryGPUUsage(ctx context.Context) (map[int]*types.GPUUsage, error) {
 	providerName, err := ae.client.GetAvailableProvider(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get cached provider information: %v", err)
@@ -53,6 +94,10 @@ func (ae *AllocationEngine) AllocateGPUs(ctx context.Context, request *types.All
 		return nil, err
 	}
 
+	// Best effort maintenance so this request sees an up-to-date pool: due
+	// bookings take their GPUs, expired and idle reservations are freed
+	_ = ae.CleanupExpiredReservations(ctx)
+
 	// Validate GPU availability using cached provider information
 	usage, err := ae.detectGPUUsage(ctx)
 	if err != nil {
@@ -65,6 +110,12 @@ func (ae *AllocationEngine) AllocateGPUs(ctx context.Context, request *types.All
 	// If force flag is set, clear unreserved GPUs list to allow allocation
 	if request.Force {
 		unreservedGPUs = []int{}
+	}
+
+	// Hold back GPUs that a scheduled booking needs while this reservation
+	// would be holding them
+	if err := ae.applyBookingProtection(ctx, request); err != nil {
+		return nil, err
 	}
 
 	// Acquire allocation lock
@@ -84,21 +135,86 @@ func (ae *AllocationEngine) AllocateGPUs(ctx context.Context, request *types.All
 		// Check if it's an availability error and provide detailed message
 		if err.Error() == "Not enough GPUs available" {
 			gpuCount, _ := ae.client.GetGPUCount(ctx)
-			available := gpuCount - len(unreservedGPUs)
 
-			var unreservedMsg string
+			excluded := make(map[int]bool, len(unreservedGPUs)+len(request.BlockedGPUs))
+			for _, gpuID := range unreservedGPUs {
+				excluded[gpuID] = true
+			}
+			for _, gpuID := range request.BlockedGPUs {
+				excluded[gpuID] = true
+			}
+			available := gpuCount - len(excluded)
+
+			var details []string
 			if len(unreservedGPUs) > 0 {
-				unreservedMsg = fmt.Sprintf(" (%d GPUs in use without reservation - run 'canhazgpu status' for details)", len(unreservedGPUs))
+				details = append(details, fmt.Sprintf("%d GPUs in use without reservation - run 'canhazgpu status' for details", len(unreservedGPUs)))
+			}
+			if len(request.BlockedGPUs) > 0 {
+				details = append(details, fmt.Sprintf("%d GPUs held for scheduled bookings - run 'canhazgpu schedule' for details", len(request.BlockedGPUs)))
+			}
+
+			var detailMsg string
+			if len(details) > 0 {
+				detailMsg = " (" + strings.Join(details, "; ") + ")"
 			}
 
 			return nil, fmt.Errorf("not enough GPUs available. Requested: %d, Available: %d%s",
-				request.GPUCount, available, unreservedMsg)
+				request.GPUCount, available, detailMsg)
 		}
 		// For specific GPU ID errors, pass through the detailed error message
 		return nil, err
 	}
 
 	return allocatedGPUs, nil
+}
+
+// bookingProtectionWindow returns how far ahead reservations without a fixed
+// end time look for scheduled bookings
+func (ae *AllocationEngine) bookingProtectionWindow() time.Duration {
+	if ae.config.BookingProtectionWindow > 0 {
+		return ae.config.BookingProtectionWindow
+	}
+	return types.DefaultBookingProtectionWindow
+}
+
+// reservationWindowEnd returns the point in time up to which a reservation
+// needs its GPUs. Manual reservations know when they expire; run-type
+// reservations do not, so a protection window is used instead.
+func (ae *AllocationEngine) reservationWindowEnd(now time.Time, expiryTime *time.Time) time.Time {
+	if expiryTime != nil {
+		return *expiryTime
+	}
+	return now.Add(ae.bookingProtectionWindow())
+}
+
+// applyBookingProtection records which GPUs must be kept free for upcoming
+// bookings, and rejects the request outright when it explicitly asks for one of
+// them
+func (ae *AllocationEngine) applyBookingProtection(ctx context.Context, request *types.AllocationRequest) error {
+	now := time.Now()
+
+	blocked, err := ae.BlockedGPUsForWindow(ctx, now, ae.reservationWindowEnd(now, request.ExpiryTime))
+	if err != nil {
+		return fmt.Errorf("failed to check scheduled bookings: %v", err)
+	}
+
+	request.BlockedGPUs = nil
+	for gpuID := range blocked {
+		request.BlockedGPUs = append(request.BlockedGPUs, gpuID)
+	}
+	sort.Ints(request.BlockedGPUs)
+
+	// Specific GPU IDs deserve an explanation rather than a generic failure
+	for _, gpuID := range request.GPUIDs {
+		if booking, held := blocked[gpuID]; held {
+			return fmt.Errorf("GPU %d is held for a scheduled booking by %s (%s, booking %s)",
+				gpuID, booking.User,
+				FormatBookingWindow(booking.StartTime.ToTime(), booking.EndTime.ToTime(), now),
+				booking.ShortID())
+		}
+	}
+
+	return nil
 }
 
 // ReleaseGPUs releases manually reserved GPUs for a user
@@ -144,6 +260,9 @@ func (ae *AllocationEngine) ReleaseGPUs(ctx context.Context, user string) ([]int
 				return nil, fmt.Errorf("failed to release GPU %d: %v", gpuID, err)
 			}
 
+			// Releasing early ends the booking that created this reservation
+			ae.completeBooking(ctx, state.BookingID)
+
 			releasedGPUs = append(releasedGPUs, gpuID)
 		}
 	}
@@ -186,6 +305,10 @@ func (ae *AllocationEngine) ReleaseSpecificGPUs(ctx context.Context, user string
 			if err := ae.client.SetGPUState(ctx, gpuID, availableState); err != nil {
 				return nil, fmt.Errorf("failed to release GPU %d: %v", gpuID, err)
 			}
+
+			// Releasing early ends the booking that created this reservation
+			ae.completeBooking(ctx, state.BookingID)
+
 			releasedGPUs = append(releasedGPUs, gpuID)
 		}
 	}
@@ -228,22 +351,41 @@ func (ae *AllocationEngine) GetGPUStatus(ctx context.Context) ([]GPUStatusInfo, 
 
 // GPUStatusInfo represents the status of a single GPU
 type GPUStatusInfo struct {
-	GPUID           int
-	Status          string // "AVAILABLE", "IN_USE", "UNRESERVED", "ERROR"
-	User            string
-	ReservationType string
-	Duration        time.Duration
-	LastHeartbeat   time.Time
-	ExpiryTime      time.Time
-	LastReleased    time.Time
-	ValidationInfo  string
-	UnreservedUsers []string
-	ProcessInfo     string
-	Error           string
-	ModelInfo       *ModelInfo `json:"model_info,omitempty"` // Detected AI model information
-	Provider        string     `json:"provider,omitempty"`   // GPU provider (e.g., "NVIDIA", "AMD")
-	GPUModel        string     `json:"gpu_model,omitempty"`  // GPU model (e.g., "H100", "RTX 4090")
-	Note            string     `json:"note,omitempty"`       // Optional note describing the reservation purpose
+	GPUID              int
+	Status             string // "AVAILABLE", "IN_USE", "UNRESERVED", "ERROR"
+	User               string
+	ReservationType    string
+	Duration           time.Duration
+	LastHeartbeat      time.Time
+	ExpiryTime         time.Time
+	LastReleased       time.Time
+	ValidationInfo     string
+	UnreservedUsers    []string
+	ProcessInfo        string
+	Error              string
+	ModelInfo          *ModelInfo    `json:"model_info,omitempty"` // Detected AI model information
+	Provider           string        `json:"provider,omitempty"`   // GPU provider (e.g., "NVIDIA", "AMD")
+	GPUModel           string        `json:"gpu_model,omitempty"`  // GPU model (e.g., "H100", "RTX 4090")
+	Note               string        `json:"note,omitempty"`       // Optional note describing the reservation purpose
+	IdleTimeout        time.Duration `json:"idle_timeout,omitempty"`
+	IdleFor            time.Duration `json:"idle_for,omitempty"` // How long the reservation has been without GPU usage
+	BookingID          string        `json:"booking_id,omitempty"`
+	MemoryMB           int           `json:"memory_mb,omitempty"`           // Memory in use as reported by the GPU provider
+	UtilizationPercent int           `json:"utilization_percent,omitempty"` // GPU utilization reported by the provider (0-100)
+
+	// Processes currently using this GPU, with owner and elapsed time
+	Processes []types.GPUProcessInfo `json:"processes,omitempty"`
+
+	// Usage on a reserved GPU that belongs to somebody other than the holder
+	ForeignUsers     []string `json:"foreign_users,omitempty"`
+	ForeignProcesses int      `json:"foreign_processes,omitempty"`
+	ForeignMemoryMB  int      `json:"foreign_memory_mb,omitempty"`
+}
+
+// HasForeignUsage reports whether somebody other than the reservation holder is
+// using this GPU
+func (s *GPUStatusInfo) HasForeignUsage() bool {
+	return len(s.ForeignUsers) > 0
 }
 
 func (ae *AllocationEngine) buildGPUStatus(gpuID int, state *types.GPUState, usage *types.GPUUsage) GPUStatusInfo {
@@ -263,6 +405,23 @@ func (ae *AllocationEngine) buildGPUStatus(gpuID int, state *types.GPUState, usa
 		status.LastHeartbeat = state.LastHeartbeat.ToTime()
 		status.ExpiryTime = state.ExpiryTime.ToTime()
 		status.Note = state.Note
+		status.BookingID = state.BookingID
+
+		// Idle tracking, for manual reservations that have an idle timeout
+		if state.Type == types.ReservationTypeManual && state.IdleTimeout > 0 {
+			status.IdleTimeout = state.IdleTimeoutDuration()
+			if !IsReservationHolderActive(state, usage, ae.config.MemoryThreshold) {
+				status.IdleFor = time.Since(state.IdleSince())
+			}
+		}
+
+		// Usage by somebody other than the holder, which the status display
+		// would otherwise show as a perfectly normal reservation
+		if foreign := DetectForeignUsage(state, usage); foreign != nil {
+			status.ForeignUsers = foreign.Users
+			status.ForeignProcesses = foreign.Processes
+			status.ForeignMemoryMB = foreign.MemoryMB
+		}
 
 		// Build validation info
 		if usage != nil && usage.MemoryMB > ae.config.MemoryThreshold {
@@ -287,16 +446,25 @@ func (ae *AllocationEngine) buildGPUStatus(gpuID int, state *types.GPUState, usa
 			}
 			status.UnreservedUsers = users
 
-			// Show memory usage without process details
-			processCount := len(usage.Processes)
-			if processCount == 1 {
-				status.ProcessInfo = fmt.Sprintf("%dMB used by 1 process", usage.MemoryMB)
+			// The VALIDATION column carries the memory figure; DETAILS keeps the
+			// process list and how long each process has been running
+			if len(usage.Processes) > 0 {
+				status.ValidationInfo = fmt.Sprintf("[validated: %dMB, %d processes]",
+					usage.MemoryMB, len(usage.Processes))
+				status.ProcessInfo = "used by " + formatProcessInfo(usage.Processes)
 			} else {
-				status.ProcessInfo = fmt.Sprintf("%dMB used by %d processes", usage.MemoryMB, processCount)
+				status.ValidationInfo = fmt.Sprintf("[validated: %dMB used]", usage.MemoryMB)
+				status.ProcessInfo = "used"
 			}
 		} else {
 			status.Status = "AVAILABLE"
 			status.LastReleased = state.LastReleased.ToTime()
+
+			// If the GPU was seen in use without a reservation after its last
+			// release, the free clock starts when that usage was last observed
+			if activity := state.LastActivity.ToTime(); activity.After(status.LastReleased) {
+				status.LastReleased = activity
+			}
 
 			// Show memory usage for available GPUs
 			if usage != nil {
@@ -314,13 +482,49 @@ func (ae *AllocationEngine) buildGPUStatus(gpuID int, state *types.GPUState, usa
 	if usage != nil {
 		status.Provider = usage.Provider
 		status.GPUModel = usage.Model
+		status.MemoryMB = usage.MemoryMB
+		status.UtilizationPercent = usage.UtilizationPercent
+		status.Processes = usage.Processes
 	}
 
 	return status
 }
 
-// CleanupExpiredReservations removes expired manual reservations
+// CleanupExpiredReservations performs the housekeeping that every command runs
+// before it looks at or hands out GPUs:
+//   - bookings whose window has started become real reservations
+//   - reservations that expired, lost their heartbeat, or sat idle are released
+//   - booking records that are long finished are pruned
+//
+// It is best effort by design: GPU usage detection failures only disable the
+// idle checks, they never abort the rest of the pass.
 func (ae *AllocationEngine) CleanupExpiredReservations(ctx context.Context) error {
+	// Without usage information we cannot tell an idle reservation from a busy
+	// one, so those checks are skipped rather than guessed at
+	usage, err := ae.detectGPUUsage(ctx)
+	if err != nil {
+		usage = nil
+	}
+
+	if _, err := ae.activateDueBookings(ctx, usage); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to activate scheduled bookings: %v\n", err)
+	}
+
+	if err := ae.cleanupReservations(ctx, usage); err != nil {
+		return err
+	}
+
+	if err := ae.pruneBookings(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to prune old bookings: %v\n", err)
+	}
+
+	return nil
+}
+
+// cleanupReservations releases reservations that expired, lost their heartbeat,
+// or - for manual reservations with an idle timeout - have not touched their
+// GPUs for too long. usage may be nil when GPU usage could not be detected.
+func (ae *AllocationEngine) cleanupReservations(ctx context.Context, usage map[int]*types.GPUUsage) error {
 	gpuCount, err := ae.client.GetGPUCount(ctx)
 	if err != nil {
 		return err
@@ -333,54 +537,137 @@ func (ae *AllocationEngine) CleanupExpiredReservations(ctx context.Context) erro
 		if err != nil {
 			continue
 		}
+		// An unreserved GPU with real processes on it is still "occupied":
+		// remember when it was last seen so the free-for clock starts at the
+		// right moment once the processes stop
+		if state.User == "" && usage != nil {
+			ae.trackUnreservedActivity(ctx, gpuID, state, usage[gpuID], now)
+		}
+
+		if state.User == "" {
+			continue
+		}
+
+		// Note down that the GPU really is being used - this is what the idle
+		// timeout below is measured against
+		ae.refreshActivity(ctx, gpuID, state, usage[gpuID], now)
 
 		var shouldRelease bool
 		var reason string
 
-		// Check for expired manual reservations
-		if state.Type == types.ReservationTypeManual &&
+		switch {
+		// Expired manual reservations
+		case state.Type == types.ReservationTypeManual &&
 			!state.ExpiryTime.ToTime().IsZero() &&
-			now.After(state.ExpiryTime.ToTime()) {
+			now.After(state.ExpiryTime.ToTime()):
 			shouldRelease = true
 			reason = "expired"
-		}
 
-		// Check for stale heartbeats (run-type reservations)
-		if state.Type == types.ReservationTypeRun &&
+		// Stale heartbeats (run-type reservations)
+		case state.Type == types.ReservationTypeRun &&
 			!state.LastHeartbeat.ToTime().IsZero() &&
-			now.Sub(state.LastHeartbeat.ToTime()) > types.HeartbeatTimeout {
+			now.Sub(state.LastHeartbeat.ToTime()) > types.HeartbeatTimeout:
 			shouldRelease = true
 			reason = "stale heartbeat"
+
+		// Manual reservations nobody is actually using. Run-type reservations
+		// are excluded: they are tied to the lifetime of a process, which may
+		// legitimately spend a long time before touching the GPU.
+		case usage != nil &&
+			state.Type == types.ReservationTypeManual &&
+			state.IdleTimeout > 0 &&
+			now.Sub(state.IdleSince()) > state.IdleTimeoutDuration():
+			shouldRelease = true
+			reason = "idle"
+			fmt.Fprintf(os.Stderr,
+				"Released GPU %d reserved by %s: no GPU usage detected for %s (idle timeout %s)\n",
+				gpuID, state.User,
+				utils.FormatDurationShort(now.Sub(state.IdleSince())),
+				utils.FormatDurationShort(state.IdleTimeoutDuration()))
 		}
 
-		if shouldRelease && state.User != "" {
-			// Record usage history
-			duration := now.Sub(state.StartTime.ToTime()).Seconds()
-			usageRecord := &types.UsageRecord{
-				User:            state.User,
-				GPUID:           gpuID,
-				StartTime:       state.StartTime,
-				EndTime:         types.FlexibleTime{Time: now},
-				Duration:        duration,
-				ReservationType: state.Type,
-			}
-
-			if err := ae.client.RecordUsageHistory(ctx, usageRecord); err != nil {
-				// Log error but don't fail the cleanup
-				fmt.Fprintf(os.Stderr, "Warning: failed to record usage history for %s: %v\n", reason, err)
-			}
-
-			// Release reservation
-			availableState := &types.GPUState{
-				LastReleased: types.FlexibleTime{Time: now},
-			}
-			if err := ae.client.SetGPUState(ctx, gpuID, availableState); err != nil {
-				fmt.Printf("Warning: failed to set GPU %d state to available: %v\n", gpuID, err)
-			}
+		if !shouldRelease {
+			continue
 		}
+
+		if err := ae.recordUsage(ctx, gpuID, state, now); err != nil {
+			// Log error but don't fail the cleanup
+			fmt.Fprintf(os.Stderr, "Warning: failed to record usage history for %s: %v\n", reason, err)
+		}
+
+		availableState := &types.GPUState{
+			LastReleased: types.FlexibleTime{Time: now},
+		}
+		if err := ae.client.SetGPUState(ctx, gpuID, availableState); err != nil {
+			fmt.Printf("Warning: failed to set GPU %d state to available: %v\n", gpuID, err)
+			continue
+		}
+
+		ae.completeBooking(ctx, state.BookingID)
 	}
 
 	return nil
+}
+
+// refreshActivity records the current time as the last observed activity of a
+// reservation that has an idle timeout, provided the GPU is genuinely in use.
+// Writes are rate limited so that frequent maintenance passes do not hammer
+// Redis.
+func (ae *AllocationEngine) refreshActivity(ctx context.Context, gpuID int, state *types.GPUState, usage *types.GPUUsage, now time.Time) {
+	if state.Type != types.ReservationTypeManual || state.IdleTimeout <= 0 {
+		return
+	}
+	// Only the holder's own work counts: somebody else's processes must not keep
+	// a reservation alive that its owner is not using
+	if !IsReservationHolderActive(state, usage, ae.config.MemoryThreshold) {
+		return
+	}
+
+	refreshAfter := activityRefreshInterval
+	if quarter := state.IdleTimeoutDuration() / 4; quarter < refreshAfter {
+		refreshAfter = quarter
+	}
+	if now.Sub(state.LastActivity.ToTime()) < refreshAfter {
+		return
+	}
+
+	state.LastActivity = types.FlexibleTime{Time: now}
+	if err := ae.client.SetGPUState(ctx, gpuID, state); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to record activity for GPU %d: %v\n", gpuID, err)
+	}
+}
+
+// trackUnreservedActivity records when an unreserved GPU was last seen with
+// real processes on it. Once the processes stop, the AVAILABLE "free for" time
+// is measured from this timestamp instead of an arbitrarily old last release.
+// Writes are rate limited so frequent maintenance passes do not hammer Redis.
+func (ae *AllocationEngine) trackUnreservedActivity(ctx context.Context, gpuID int, state *types.GPUState, usage *types.GPUUsage, now time.Time) {
+	if state.User != "" || usage == nil {
+		return
+	}
+	if !IsGPUInUnreservedUse(usage, ae.config.MemoryThreshold) {
+		return
+	}
+	if now.Sub(state.LastActivity.ToTime()) < activityRefreshInterval {
+		return
+	}
+
+	state.LastActivity = types.FlexibleTime{Time: now}
+	if err := ae.client.SetGPUState(ctx, gpuID, state); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to record activity for GPU %d: %v\n", gpuID, err)
+	}
+}
+
+// recordUsage writes a usage history record for a reservation that is ending
+func (ae *AllocationEngine) recordUsage(ctx context.Context, gpuID int, state *types.GPUState, endTime time.Time) error {
+	return ae.client.RecordUsageHistory(ctx, &types.UsageRecord{
+		User:            state.User,
+		GPUID:           gpuID,
+		StartTime:       state.StartTime,
+		EndTime:         types.FlexibleTime{Time: endTime},
+		Duration:        endTime.Sub(state.StartTime.ToTime()).Seconds(),
+		ReservationType: state.Type,
+	})
 }
 
 // QueuedAllocationRequest extends AllocationRequest with queue-specific options
@@ -450,6 +737,7 @@ func (ae *AllocationEngine) createQueueEntry(request *QueuedAllocationRequest) *
 		RequestedIDs:    request.GPUIDs,
 		AllocatedGPUs:   []int{},
 		ReservationType: request.ReservationType,
+		IdleTimeout:     request.IdleTimeout,
 		Note:            request.Note,
 		EnqueueTime:     types.FlexibleTime{Time: now},
 		LastHeartbeat:   types.FlexibleTime{Time: now},
@@ -594,6 +882,17 @@ func (ae *AllocationEngine) tryAllocateForQueueEntry(ctx context.Context, queueE
 		unreservedGPUs = []int{}
 	}
 
+	// GPUs needed by upcoming scheduled bookings stay out of reach
+	var expiryTime *time.Time
+	if entry.ReservationType == types.ReservationTypeManual && entry.ExpiryDuration > 0 {
+		expiry := now.Add(entry.ExpiryDuration)
+		expiryTime = &expiry
+	}
+	blockedGPUs, err := ae.BlockedGPUsForWindow(ctx, now, ae.reservationWindowEnd(now, expiryTime))
+	if err != nil {
+		return nil, fmt.Errorf("failed to check scheduled bookings: %v", err)
+	}
+
 	// Find available GPUs
 	gpuCount, err := ae.client.GetGPUCount(ctx)
 	if err != nil {
@@ -623,6 +922,11 @@ func (ae *AllocationEngine) tryAllocateForQueueEntry(ctx context.Context, queueE
 			}
 		}
 		if isUnreserved {
+			continue
+		}
+
+		// Skip GPUs held for a scheduled booking
+		if _, held := blockedGPUs[gpuID]; held {
 			continue
 		}
 
@@ -679,8 +983,14 @@ func (ae *AllocationEngine) tryAllocateForQueueEntry(ctx context.Context, queueE
 
 		if entry.ReservationType == types.ReservationTypeRun {
 			gpuState.LastHeartbeat = types.FlexibleTime{Time: now}
-		} else if entry.ReservationType == types.ReservationTypeManual && entry.ExpiryDuration > 0 {
-			gpuState.ExpiryTime = types.FlexibleTime{Time: now.Add(entry.ExpiryDuration)}
+		} else if entry.ReservationType == types.ReservationTypeManual {
+			if entry.ExpiryDuration > 0 {
+				gpuState.ExpiryTime = types.FlexibleTime{Time: now.Add(entry.ExpiryDuration)}
+			}
+			if entry.IdleTimeout > 0 {
+				gpuState.IdleTimeout = int64(entry.IdleTimeout.Seconds())
+				gpuState.LastActivity = types.FlexibleTime{Time: now}
+			}
 		}
 
 		if err := ae.client.SetGPUState(ctx, gpuID, gpuState); err != nil {
@@ -720,6 +1030,12 @@ func (ae *AllocationEngine) finalizeAllocation(ctx context.Context, entry *types
 		// Update expiry time for manual reservations (use the time of final allocation)
 		if state.Type == types.ReservationTypeManual && entry.ExpiryDuration > 0 {
 			state.ExpiryTime = types.FlexibleTime{Time: now.Add(entry.ExpiryDuration)}
+		}
+
+		// The idle clock starts once the whole request is satisfied: partially
+		// allocated GPUs cannot be used yet
+		if state.Type == types.ReservationTypeManual && state.IdleTimeout > 0 {
+			state.LastActivity = types.FlexibleTime{Time: now}
 		}
 
 		if err := ae.client.SetGPUState(ctx, gpuID, state); err != nil {

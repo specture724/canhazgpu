@@ -21,7 +21,7 @@ For each GPU process, canhazgpu identifies the owner:
 3. **Username resolution**: Convert UID to username using system user database
 
 ### Memory Threshold
-GPUs with more than the configured memory threshold are considered "in use" (default: **1GB = 1024 MB**):
+GPUs with more than the configured memory threshold are considered "in use" (default: **100 MB**):
 
 - **Below threshold**: Baseline GPU driver usage, considered available
 - **Above threshold**: Active workload detected, GPU marked as in use

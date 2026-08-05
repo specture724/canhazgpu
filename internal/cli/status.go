@@ -41,11 +41,12 @@ Summary mode:
 }
 
 var (
-	jsonOutput  bool
-	showAll     bool
-	remoteName  string
-	showSummary bool
-	noColorFlag bool
+	jsonOutput   bool
+	showAll      bool
+	remoteName   string
+	showSummary  bool
+	noColorFlag  bool
+	verboseCount int
 )
 
 func init() {
@@ -54,6 +55,8 @@ func init() {
 	statusCmd.Flags().StringVarP(&remoteName, "remote", "r", "", "Show status for a specific remote host")
 	statusCmd.Flags().BoolVarP(&showSummary, "summary", "s", false, "Show summary with GPU counts and availability")
 	statusCmd.Flags().BoolVar(&noColorFlag, "no-color", false, "Disable colored output")
+	statusCmd.Flags().CountVarP(&verboseCount, "verbose", "v",
+		"Show more process detail in DETAILS: -v adds process names (max 2), -vv shows all")
 	rootCmd.AddCommand(statusCmd)
 }
 
@@ -411,6 +414,12 @@ func convertJSONToStatusInfo(j JSONGPUStatus) gpu.GPUStatusInfo {
 	status.ProcessInfo = j.ProcessInfo
 	status.UnreservedUsers = j.UnreservedUsers
 	status.Error = j.Error
+	status.BookingID = j.BookingID
+	status.ForeignUsers = j.ForeignUsers
+	status.ForeignProcesses = j.ForeignProcesses
+	status.ForeignMemoryMB = j.ForeignMemoryMB
+	status.Processes = j.Processes
+	status.UtilizationPercent = j.UtilizationPercent
 
 	if j.LastReleased != nil {
 		status.LastReleased = *j.LastReleased
@@ -552,13 +561,14 @@ func displayGPUStatusTable(statuses []gpu.GPUStatusInfo) {
 		t.AppendHeader(table.Row{
 			FormatHeader("GPU"), FormatHeader("STATUS"), FormatHeader("USER"),
 			FormatHeader("DURATION"), FormatHeader("TYPE"), FormatHeader("DETAILS"),
-			FormatHeader("VALIDATION"), FormatHeader("MODEL"), FormatHeader("NOTE"),
+			FormatHeader("MEMORY"), FormatHeader("MODEL"), FormatHeader("NOTE"),
+			FormatHeader("UTIL"),
 		})
 	} else {
 		t.AppendHeader(table.Row{
 			FormatHeader("GPU"), FormatHeader("STATUS"), FormatHeader("USER"),
 			FormatHeader("DURATION"), FormatHeader("TYPE"), FormatHeader("DETAILS"),
-			FormatHeader("VALIDATION"), FormatHeader("NOTE"),
+			FormatHeader("MEMORY"), FormatHeader("NOTE"), FormatHeader("UTIL"),
 		})
 	}
 
@@ -595,12 +605,12 @@ func addGPUStatusRow(t table.Writer, status gpu.GPUStatusInfo, includeModel bool
 		if includeModel {
 			t.AppendRow(table.Row{
 				gpuID, FormatStatus("AVAILABLE"), FormatDim("-"), FormatDim("-"), FormatDim("-"),
-				details, FormatDim(validation), model, FormatDim("-"),
+				details, FormatDim(validation), model, FormatDim("-"), formatUtilization(status.UtilizationPercent),
 			})
 		} else {
 			t.AppendRow(table.Row{
 				gpuID, FormatStatus("AVAILABLE"), FormatDim("-"), FormatDim("-"), FormatDim("-"),
-				details, FormatDim(validation), FormatDim("-"),
+				details, FormatDim(validation), FormatDim("-"), formatUtilization(status.UtilizationPercent),
 			})
 		}
 
@@ -608,6 +618,13 @@ func addGPUStatusRow(t table.Writer, status gpu.GPUStatusInfo, includeModel bool
 		user := status.User
 		duration := utils.FormatDuration(status.Duration)
 		reservationType := strings.ToUpper(status.ReservationType)
+
+		// A reserved GPU that somebody else is using looks like a perfectly
+		// normal reservation unless it is called out
+		statusCell := FormatStatus("IN_USE")
+		if status.HasForeignUsage() {
+			statusCell = FormatStatus("FOREIGN")
+		}
 
 		var details string
 		switch status.ReservationType {
@@ -623,6 +640,19 @@ func addGPUStatusRow(t table.Writer, status gpu.GPUStatusInfo, includeModel bool
 			} else {
 				details = "manual reservation"
 			}
+			if idle := formatIdleStatus(status); idle != "" {
+				details += ", " + idle
+			}
+			if status.BookingID != "" {
+				details += ", booked"
+			}
+		}
+
+		if foreign := formatForeignUsage(status); foreign != "" {
+			details += ", " + foreign
+		}
+		if processes := formatProcessRuntime(status.Processes, verboseCount); processes != "" {
+			details += ", " + processes
 		}
 
 		// Clean validation info
@@ -643,17 +673,22 @@ func addGPUStatusRow(t table.Writer, status gpu.GPUStatusInfo, includeModel bool
 
 		if includeModel {
 			t.AppendRow(table.Row{
-				gpuID, FormatStatus("IN_USE"), user, duration, reservationType, details, FormatDim(validation), model, note,
+				gpuID, statusCell, user, duration, reservationType, details, FormatDim(validation), model, note,
+				formatUtilization(status.UtilizationPercent),
 			})
 		} else {
 			t.AppendRow(table.Row{
-				gpuID, FormatStatus("IN_USE"), user, duration, reservationType, details, FormatDim(validation), note,
+				gpuID, statusCell, user, duration, reservationType, details, FormatDim(validation), note,
+				formatUtilization(status.UtilizationPercent),
 			})
 		}
 
 	case "UNRESERVED":
 		userList := utils.FormatUserList(status.UnreservedUsers, 2)
 		details := status.ProcessInfo
+		if formatted := formatUnreservedDetails(status, verboseCount); formatted != "" {
+			details = formatted
+		}
 
 		// Set model info
 		model := "-"
@@ -661,15 +696,19 @@ func addGPUStatusRow(t table.Writer, status gpu.GPUStatusInfo, includeModel bool
 			model = status.ModelInfo.Model
 		}
 
+		// Clean validation info
+		validation := strings.TrimSpace(strings.Trim(status.ValidationInfo, "[]"))
+		validation = strings.TrimPrefix(validation, "validated: ")
+
 		if includeModel {
 			t.AppendRow(table.Row{
 				gpuID, FormatStatus("UNRESERVED"), userList, FormatDim("-"), FormatDim("-"),
-				details, FormatDim("-"), model, FormatDim("-"),
+				details, FormatDim(validation), model, FormatDim("-"), formatUtilization(status.UtilizationPercent),
 			})
 		} else {
 			t.AppendRow(table.Row{
 				gpuID, FormatStatus("UNRESERVED"), userList, FormatDim("-"), FormatDim("-"),
-				details, FormatDim("-"), FormatDim("-"),
+				details, FormatDim(validation), FormatDim("-"), formatUtilization(status.UtilizationPercent),
 			})
 		}
 
@@ -677,12 +716,12 @@ func addGPUStatusRow(t table.Writer, status gpu.GPUStatusInfo, includeModel bool
 		if includeModel {
 			t.AppendRow(table.Row{
 				gpuID, FormatStatus("ERROR"), FormatDim("-"), FormatDim("-"), FormatDim("-"),
-				status.Error, FormatDim("-"), FormatDim("-"), FormatDim("-"),
+				status.Error, FormatDim("-"), FormatDim("-"), FormatDim("-"), FormatDim("-"),
 			})
 		} else {
 			t.AppendRow(table.Row{
 				gpuID, FormatStatus("ERROR"), FormatDim("-"), FormatDim("-"), FormatDim("-"),
-				status.Error, FormatDim("-"), FormatDim("-"),
+				status.Error, FormatDim("-"), FormatDim("-"), FormatDim("-"),
 			})
 		}
 
@@ -690,15 +729,111 @@ func addGPUStatusRow(t table.Writer, status gpu.GPUStatusInfo, includeModel bool
 		if includeModel {
 			t.AppendRow(table.Row{
 				gpuID, "UNKNOWN", FormatDim("-"), FormatDim("-"), FormatDim("-"),
-				"unknown status", FormatDim("-"), FormatDim("-"), FormatDim("-"),
+				"unknown status", FormatDim("-"), FormatDim("-"), FormatDim("-"), FormatDim("-"),
 			})
 		} else {
 			t.AppendRow(table.Row{
 				gpuID, "UNKNOWN", FormatDim("-"), FormatDim("-"), FormatDim("-"),
-				"unknown status", FormatDim("-"), FormatDim("-"),
+				"unknown status", FormatDim("-"), FormatDim("-"), FormatDim("-"),
 			})
 		}
 	}
+}
+
+// formatUtilization renders a GPU utilization percentage for the UTIL column.
+func formatUtilization(percent int) string {
+	return fmt.Sprintf("%d%%", percent)
+}
+
+// formatProcessRuntime describes the processes currently using a GPU. The
+// default shows only PID and elapsed time (e.g. "PID 123 (2h3m)"); -v adds
+// process names for at most two processes, and -vv shows every process with
+// its name.
+func formatProcessRuntime(processes []types.GPUProcessInfo, verbose int) string {
+	const (
+		maxProcesses      = 3 // default cap, PID + time only
+		maxNamedProcesses = 2 // cap with process names (-v)
+	)
+	if len(processes) == 0 {
+		return ""
+	}
+
+	includeNames := verbose >= 1
+	limit := maxProcesses
+	if includeNames {
+		limit = maxNamedProcesses
+	}
+	if verbose >= 2 {
+		limit = len(processes) // -vv: show everything
+	}
+
+	parts := make([]string, 0, len(processes))
+	for _, proc := range processes {
+		if len(parts) >= limit {
+			break
+		}
+
+		desc := fmt.Sprintf("PID %d", proc.PID)
+		var detail []string
+		if includeNames && proc.ProcessName != "" {
+			detail = append(detail, proc.ProcessName)
+		}
+		if proc.ElapsedSeconds > 0 {
+			detail = append(detail, utils.FormatDurationShort(time.Duration(proc.ElapsedSeconds)*time.Second))
+		}
+		if len(detail) > 0 {
+			desc += " (" + strings.Join(detail, ", ") + ")"
+		}
+		parts = append(parts, desc)
+	}
+	if len(processes) > limit {
+		parts = append(parts, fmt.Sprintf("+%d more", len(processes)-limit))
+	}
+
+	return "processes: " + strings.Join(parts, ", ")
+}
+
+// formatUnreservedDetails describes the processes behind unreserved usage, e.g.
+// "used by PID 123 (2h3m), PID 456 (5m)", honoring the -v/-vv verbosity levels.
+// Memory usage lives in the MEMORY column. Returns an empty string when no
+// process list is available (older remote hosts), so callers can fall back to
+// ProcessInfo.
+func formatUnreservedDetails(status gpu.GPUStatusInfo, verbose int) string {
+	if len(status.Processes) == 0 {
+		return ""
+	}
+
+	processes := strings.TrimPrefix(formatProcessRuntime(status.Processes, verbose), "processes: ")
+	return "used by " + processes
+}
+
+// formatIdleStatus describes how much of a reservation's idle grace period is
+// left, and is empty when the reservation has no idle timeout or is in use
+func formatIdleStatus(status gpu.GPUStatusInfo) string {
+	// Below a minute the countdown is noise: the reservation was just made or
+	// the GPU was in use moments ago
+	if status.IdleTimeout <= 0 || status.IdleFor < time.Minute {
+		return ""
+	}
+
+	remaining := status.IdleTimeout - status.IdleFor
+	if remaining <= 0 {
+		return "idle, releasing"
+	}
+
+	return fmt.Sprintf("idle %s, released in %s",
+		utils.FormatDurationShort(status.IdleFor), utils.FormatDurationShort(remaining))
+}
+
+// formatForeignUsage describes usage by somebody other than the reservation
+// holder, and is empty when there is none
+func formatForeignUsage(status gpu.GPUStatusInfo) string {
+	if !status.HasForeignUsage() {
+		return ""
+	}
+
+	// The memory figure lives in the MEMORY column; DETAILS only says who
+	return fmt.Sprintf("used by %s", utils.FormatUserList(status.ForeignUsers, 2))
 }
 
 // JSONGPUStatus represents a GPU status for JSON output
@@ -719,6 +854,20 @@ type JSONGPUStatus struct {
 	UnreservedUsers []string       `json:"unreserved_users,omitempty"`
 	ProcessInfo     string         `json:"process_info,omitempty"`
 	Error           string         `json:"error,omitempty"`
+	IdleTimeout     string         `json:"idle_timeout,omitempty"`
+	IdleFor         string         `json:"idle_for,omitempty"`
+	BookingID       string         `json:"booking_id,omitempty"`
+
+	// Usage by somebody other than the reservation holder. The status stays
+	// IN_USE so existing consumers keep working; these fields carry the detail.
+	ForeignUsers     []string `json:"foreign_users,omitempty"`
+	ForeignProcesses int      `json:"foreign_processes,omitempty"`
+	ForeignMemoryMB  int      `json:"foreign_memory_mb,omitempty"`
+
+	// Processes currently using this GPU, with owner and elapsed time
+	Processes []types.GPUProcessInfo `json:"processes,omitempty"`
+
+	UtilizationPercent int `json:"utilization_percent,omitempty"` // GPU utilization (0-100)
 }
 
 // JSONModelInfo represents model information for JSON output
@@ -779,6 +928,23 @@ func displayGPUStatusJSON(statuses []gpu.GPUStatusInfo) error {
 				} else {
 					jsonStatus.Details = "manual reservation"
 				}
+				if status.IdleTimeout > 0 {
+					jsonStatus.IdleTimeout = utils.FormatDurationShort(status.IdleTimeout)
+					if status.IdleFor > 0 {
+						jsonStatus.IdleFor = utils.FormatDurationShort(status.IdleFor)
+					}
+				}
+				jsonStatus.BookingID = status.BookingID
+			}
+
+			if status.HasForeignUsage() {
+				jsonStatus.ForeignUsers = status.ForeignUsers
+				jsonStatus.ForeignProcesses = status.ForeignProcesses
+				jsonStatus.ForeignMemoryMB = status.ForeignMemoryMB
+				jsonStatus.Details += ", " + formatForeignUsage(status)
+			}
+			if processes := formatProcessRuntime(status.Processes, verboseCount); processes != "" {
+				jsonStatus.Details += ", " + processes
 			}
 
 		case "UNRESERVED":
@@ -786,7 +952,9 @@ func displayGPUStatusJSON(statuses []gpu.GPUStatusInfo) error {
 			if len(status.UnreservedUsers) > 0 {
 				jsonStatus.UnreservedUsers = status.UnreservedUsers
 			}
-			if status.ProcessInfo != "" {
+			if formatted := formatUnreservedDetails(status, verboseCount); formatted != "" {
+				jsonStatus.ProcessInfo = formatted
+			} else if status.ProcessInfo != "" {
 				jsonStatus.ProcessInfo = status.ProcessInfo
 			}
 
@@ -818,6 +986,16 @@ func displayGPUStatusJSON(statuses []gpu.GPUStatusInfo) error {
 		// Add GPU model if present
 		if status.GPUModel != "" {
 			jsonStatus.GPUModel = status.GPUModel
+		}
+
+		// Add process details if present
+		if len(status.Processes) > 0 {
+			jsonStatus.Processes = status.Processes
+		}
+
+		// Add GPU utilization if present
+		if status.UtilizationPercent > 0 {
+			jsonStatus.UtilizationPercent = status.UtilizationPercent
 		}
 
 		jsonStatuses[i] = jsonStatus

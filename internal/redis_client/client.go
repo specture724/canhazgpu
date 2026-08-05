@@ -154,9 +154,15 @@ func (c *Client) SetGPUState(ctx context.Context, gpuID int, state *types.GPUSta
 	key := fmt.Sprintf("%sgpu:%d", types.RedisKeyPrefix, gpuID)
 
 	if state.User == "" {
-		// GPU is available, just store last_released timestamp if it exists
-		if !state.LastReleased.ToTime().IsZero() {
-			availableState := types.GPUState{LastReleased: state.LastReleased}
+		// GPU is available, keep the timestamps that describe when it was last
+		// occupied: last_released (from a reservation) and last_activity (from
+		// unreserved usage). The latter drives the "free for" clock after
+		// unreserved processes stop.
+		availableState := types.GPUState{
+			LastReleased: state.LastReleased,
+			LastActivity: state.LastActivity,
+		}
+		if !availableState.LastReleased.ToTime().IsZero() || !availableState.LastActivity.ToTime().IsZero() {
 			data, err := json.Marshal(availableState)
 			if err != nil {
 				return err
@@ -222,6 +228,8 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 		local expiry_time = ARGV[7]
 		local unreserved_gpus_json = ARGV[8]
 		local note = ARGV[9]
+		local blocked_gpus_json = ARGV[10]
+		local idle_timeout = tonumber(ARGV[11])
 
 		-- Parse unreserved GPUs
 		local unreserved_gpus = {}
@@ -230,6 +238,17 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 			if success and unreserved_list and type(unreserved_list) == "table" then
 				for _, gpu_id in ipairs(unreserved_list) do
 					unreserved_gpus[tonumber(gpu_id)] = true
+				end
+			end
+		end
+
+		-- Parse GPUs held back for upcoming scheduled bookings
+		local blocked_gpus = {}
+		if blocked_gpus_json and blocked_gpus_json ~= "" and blocked_gpus_json ~= "[]" and blocked_gpus_json ~= "null" then
+			local success, blocked_list = pcall(cjson.decode, blocked_gpus_json)
+			if success and blocked_list and type(blocked_list) == "table" then
+				for _, gpu_id in ipairs(blocked_list) do
+					blocked_gpus[tonumber(gpu_id)] = true
 				end
 			end
 		end
@@ -260,8 +279,8 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 			local key = "canhazgpu:gpu:" .. i
 			local gpu_data = redis.call('GET', key)
 
-			-- Skip unreserved GPUs
-			if not unreserved_gpus[i] then
+			-- Skip GPUs in unreserved use or held for a scheduled booking
+			if not unreserved_gpus[i] and not blocked_gpus[i] then
 				if not gpu_data then
 					-- GPU is available (never used)
 					table.insert(available_gpus, {
@@ -350,8 +369,16 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 
 			if reservation_type == "run" then
 				state.last_heartbeat = current_time
-			elseif reservation_type == "manual" and expiry_time ~= "nil" then
-				state.expiry_time = tonumber(expiry_time)
+			elseif reservation_type == "manual" then
+				if expiry_time ~= "nil" then
+					state.expiry_time = tonumber(expiry_time)
+				end
+				-- Idle timeout only applies to manual reservations: run-type
+				-- reservations are already tied to the lifetime of a process
+				if idle_timeout and idle_timeout > 0 then
+					state.idle_timeout = idle_timeout
+					state.last_activity = current_time
+				end
 			end
 
 			-- Add note if provided
@@ -369,6 +396,12 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 
 	// Convert unreserved GPUs to JSON
 	unreservedJSON, err := json.Marshal(unreservedGPUs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert GPUs held for scheduled bookings to JSON
+	blockedJSON, err := json.Marshal(request.BlockedGPUs)
 	if err != nil {
 		return nil, err
 	}
@@ -397,6 +430,8 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 		expiryTime,
 		string(unreservedJSON),
 		request.Note,
+		string(blockedJSON),
+		int64(request.IdleTimeout.Seconds()),
 	).Result()
 
 	if err != nil {
@@ -446,7 +481,9 @@ func (c *Client) atomicReserveSpecificGPUs(ctx context.Context, request *types.A
 		local unreserved_gpus_json = ARGV[7]
 		local gpu_count = tonumber(ARGV[8])
 		local note = ARGV[9]
-		
+		local blocked_gpus_json = ARGV[10]
+		local idle_timeout = tonumber(ARGV[11])
+
 		-- Parse requested GPU IDs
 		local requested_gpus = {}
 		if requested_gpus_json and requested_gpus_json ~= "" and requested_gpus_json ~= "[]" and requested_gpus_json ~= "null" then
@@ -470,20 +507,36 @@ func (c *Client) atomicReserveSpecificGPUs(ctx context.Context, request *types.A
 			end
 		end
 		
+		-- Parse GPUs held back for upcoming scheduled bookings
+		local blocked_gpus = {}
+		if blocked_gpus_json and blocked_gpus_json ~= "" and blocked_gpus_json ~= "[]" and blocked_gpus_json ~= "null" then
+			local success, blocked_list = pcall(cjson.decode, blocked_gpus_json)
+			if success and blocked_list and type(blocked_list) == "table" then
+				for _, gpu_id in ipairs(blocked_list) do
+					blocked_gpus[tonumber(gpu_id)] = true
+				end
+			end
+		end
+
 		-- Validate all requested GPUs
 		for _, gpu_id in ipairs(requested_gpus) do
 			local gpu_id_num = tonumber(gpu_id)
-			
+
 			-- Check if GPU ID is valid (within range)
 			if gpu_id_num < 0 or gpu_id_num >= gpu_count then
 				return redis.error_reply("GPU ID " .. gpu_id .. " is out of range (0-" .. (gpu_count-1) .. ")")
 			end
-			
+
 			-- Check if GPU is unreserved (in use without reservation)
 			if unreserved_gpus[gpu_id_num] then
 				return redis.error_reply("GPU " .. gpu_id .. " is in use without reservation")
 			end
-			
+
+			-- Check if GPU is held for an upcoming scheduled booking
+			if blocked_gpus[gpu_id_num] then
+				return redis.error_reply("GPU " .. gpu_id .. " is held for a scheduled booking")
+			end
+
 			-- Check if GPU is already reserved
 			local key = "canhazgpu:gpu:" .. gpu_id
 			local gpu_data = redis.call('GET', key)
@@ -520,8 +573,16 @@ func (c *Client) atomicReserveSpecificGPUs(ctx context.Context, request *types.A
 
 			if reservation_type == "run" then
 				state.last_heartbeat = current_time
-			elseif reservation_type == "manual" and expiry_time ~= "nil" then
-				state.expiry_time = tonumber(expiry_time)
+			elseif reservation_type == "manual" then
+				if expiry_time ~= "nil" then
+					state.expiry_time = tonumber(expiry_time)
+				end
+				-- Idle timeout only applies to manual reservations: run-type
+				-- reservations are already tied to the lifetime of a process
+				if idle_timeout and idle_timeout > 0 then
+					state.idle_timeout = idle_timeout
+					state.last_activity = current_time
+				end
 			end
 
 			-- Add note if provided
@@ -545,6 +606,12 @@ func (c *Client) atomicReserveSpecificGPUs(ctx context.Context, request *types.A
 
 	// Convert unreserved GPUs to JSON
 	unreservedJSON, err := json.Marshal(unreservedGPUs)
+	if err != nil {
+		return nil, err
+	}
+
+	// Convert GPUs held for scheduled bookings to JSON
+	blockedJSON, err := json.Marshal(request.BlockedGPUs)
 	if err != nil {
 		return nil, err
 	}
@@ -573,6 +640,8 @@ func (c *Client) atomicReserveSpecificGPUs(ctx context.Context, request *types.A
 		string(unreservedJSON),
 		gpuCount,
 		request.Note,
+		string(blockedJSON),
+		int64(request.IdleTimeout.Seconds()),
 	).Result()
 
 	if err != nil {
@@ -629,6 +698,34 @@ func (c *Client) ClearAllGPUStates(ctx context.Context) error {
 // This should only be used in tests to ensure a clean state.
 func (c *Client) FlushTestDB(ctx context.Context) error {
 	return c.rdb.FlushDB(ctx).Err()
+}
+
+// DeleteAllKeys removes every key this tool owns in the current database,
+// leaving keys belonging to anything else that shares the database untouched.
+// It returns how many keys were removed.
+func (c *Client) DeleteAllKeys(ctx context.Context) (int, error) {
+	var deleted int
+	var cursor uint64
+
+	for {
+		keys, next, err := c.rdb.Scan(ctx, cursor, types.RedisKeyPrefix+"*", 500).Result()
+		if err != nil {
+			return deleted, err
+		}
+
+		if len(keys) > 0 {
+			removed, err := c.rdb.Del(ctx, keys...).Result()
+			if err != nil {
+				return deleted, err
+			}
+			deleted += int(removed)
+		}
+
+		cursor = next
+		if cursor == 0 {
+			return deleted, nil
+		}
+	}
 }
 
 // RecordUsageHistory records a GPU usage entry when a reservation is released
@@ -772,6 +869,295 @@ func (c *Client) migrateOldUsageRecords(ctx context.Context, records []*types.Us
 	}
 
 	return nil
+}
+
+// Booking Management Operations
+
+// SaveBooking stores a booking, indexed by its start time. It is used both for
+// creating new bookings and for updating existing ones.
+func (c *Client) SaveBooking(ctx context.Context, booking *types.Booking) error {
+	data, err := json.Marshal(booking)
+	if err != nil {
+		return fmt.Errorf("failed to marshal booking: %v", err)
+	}
+
+	pipe := c.rdb.TxPipeline()
+	pipe.ZAdd(ctx, types.RedisKeyBookings, &redis.Z{
+		Score:  float64(booking.StartTime.ToTime().Unix()),
+		Member: booking.ID,
+	})
+	pipe.Set(ctx, types.RedisKeyBooking+booking.ID, data, 0)
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to save booking: %v", err)
+	}
+
+	return nil
+}
+
+// GetBooking retrieves a booking by its full ID. It returns nil (without an
+// error) when no such booking exists.
+func (c *Client) GetBooking(ctx context.Context, bookingID string) (*types.Booking, error) {
+	data, err := c.rdb.Get(ctx, types.RedisKeyBooking+bookingID).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get booking: %v", err)
+	}
+
+	var booking types.Booking
+	if err := json.Unmarshal([]byte(data), &booking); err != nil {
+		return nil, fmt.Errorf("corrupted booking %s: %v", bookingID, err)
+	}
+
+	return &booking, nil
+}
+
+// DeleteBooking removes a booking entirely
+func (c *Client) DeleteBooking(ctx context.Context, bookingID string) error {
+	pipe := c.rdb.TxPipeline()
+	pipe.ZRem(ctx, types.RedisKeyBookings, bookingID)
+	pipe.Del(ctx, types.RedisKeyBooking+bookingID)
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to delete booking: %v", err)
+	}
+
+	return nil
+}
+
+// GetAllBookings returns every stored booking ordered by start time
+func (c *Client) GetAllBookings(ctx context.Context) ([]*types.Booking, error) {
+	bookingIDs, err := c.rdb.ZRange(ctx, types.RedisKeyBookings, 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get booking IDs: %v", err)
+	}
+
+	var bookings []*types.Booking
+	for _, bookingID := range bookingIDs {
+		booking, err := c.GetBooking(ctx, bookingID)
+		if err != nil {
+			continue
+		}
+		if booking == nil {
+			// Index entry without details - drop it so the index stays clean
+			_ = c.rdb.ZRem(ctx, types.RedisKeyBookings, bookingID).Err()
+			continue
+		}
+		bookings = append(bookings, booking)
+	}
+
+	return bookings, nil
+}
+
+// Violation Management Operations
+
+// SaveViolation stores an open violation, indexed by when it was first seen
+func (c *Client) SaveViolation(ctx context.Context, violation *types.Violation) error {
+	data, err := json.Marshal(violation)
+	if err != nil {
+		return fmt.Errorf("failed to marshal violation: %v", err)
+	}
+
+	pipe := c.rdb.TxPipeline()
+	pipe.ZAdd(ctx, types.RedisKeyViolations, &redis.Z{
+		Score:  float64(violation.FirstSeen.ToTime().Unix()),
+		Member: violation.ViolationID(),
+	})
+	pipe.Set(ctx, types.RedisKeyViolation+violation.ViolationID(), data, 24*time.Hour)
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to save violation: %v", err)
+	}
+
+	return nil
+}
+
+// GetViolation retrieves an open violation by its "gpu:pid" identifier. It
+// returns nil (without an error) when there is no such violation.
+func (c *Client) GetViolation(ctx context.Context, violationID string) (*types.Violation, error) {
+	data, err := c.rdb.Get(ctx, types.RedisKeyViolation+violationID).Result()
+	if err == redis.Nil {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("failed to get violation: %v", err)
+	}
+
+	var violation types.Violation
+	if err := json.Unmarshal([]byte(data), &violation); err != nil {
+		return nil, fmt.Errorf("corrupted violation %s: %v", violationID, err)
+	}
+
+	return &violation, nil
+}
+
+// DeleteViolation removes an open violation
+func (c *Client) DeleteViolation(ctx context.Context, violationID string) error {
+	pipe := c.rdb.TxPipeline()
+	pipe.ZRem(ctx, types.RedisKeyViolations, violationID)
+	pipe.Del(ctx, types.RedisKeyViolation+violationID)
+
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("failed to delete violation: %v", err)
+	}
+
+	return nil
+}
+
+// GetAllViolations returns every open violation, oldest first
+func (c *Client) GetAllViolations(ctx context.Context) ([]*types.Violation, error) {
+	violationIDs, err := c.rdb.ZRange(ctx, types.RedisKeyViolations, 0, -1).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get violation IDs: %v", err)
+	}
+
+	var violations []*types.Violation
+	for _, violationID := range violationIDs {
+		violation, err := c.GetViolation(ctx, violationID)
+		if err != nil {
+			continue
+		}
+		if violation == nil {
+			// Details expired - drop the index entry as well
+			_ = c.rdb.ZRem(ctx, types.RedisKeyViolations, violationID).Err()
+			continue
+		}
+		violations = append(violations, violation)
+	}
+
+	return violations, nil
+}
+
+// RecordViolationHistory appends a resolved violation to the history
+func (c *Client) RecordViolationHistory(ctx context.Context, violation *types.Violation) error {
+	data, err := json.Marshal(violation)
+	if err != nil {
+		return err
+	}
+
+	if err := c.rdb.ZAdd(ctx, types.RedisKeyViolationHistory, &redis.Z{
+		Score:  float64(violation.EndTime.ToTime().Unix()),
+		Member: string(data),
+	}).Err(); err != nil {
+		return fmt.Errorf("failed to record violation history: %v", err)
+	}
+
+	if err := c.rdb.Expire(ctx, types.RedisKeyViolationHistory, types.ViolationRetention).Err(); err != nil {
+		fmt.Printf("Warning: failed to set expiration on violation history: %v\n", err)
+	}
+
+	return nil
+}
+
+// GetViolationHistory retrieves resolved violations in the given time range
+func (c *Client) GetViolationHistory(ctx context.Context, startTime, endTime time.Time) ([]*types.Violation, error) {
+	results, err := c.rdb.ZRangeByScore(ctx, types.RedisKeyViolationHistory, &redis.ZRangeBy{
+		Min: fmt.Sprintf("%d", startTime.Unix()),
+		Max: fmt.Sprintf("%d", endTime.Unix()),
+	}).Result()
+	if err != nil {
+		return nil, fmt.Errorf("failed to query violation history: %v", err)
+	}
+
+	var violations []*types.Violation
+	for _, result := range results {
+		var violation types.Violation
+		if err := json.Unmarshal([]byte(result), &violation); err != nil {
+			continue
+		}
+		violations = append(violations, &violation)
+	}
+
+	return violations, nil
+}
+
+// Guard Coordination
+
+// AcquireGuardLock claims the singleton guard role. It reports whether the lock
+// was obtained, and who holds it otherwise.
+func (c *Client) AcquireGuardLock(ctx context.Context, owner string) (bool, string, error) {
+	acquired, err := c.rdb.SetNX(ctx, types.RedisKeyGuardLock, owner, types.GuardLockTTL).Result()
+	if err != nil {
+		return false, "", err
+	}
+	if acquired {
+		return true, owner, nil
+	}
+
+	holder, err := c.rdb.Get(ctx, types.RedisKeyGuardLock).Result()
+	if err == redis.Nil {
+		// The lock expired between the two calls - let the caller retry
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", err
+	}
+
+	// A guard that restarts quickly should be able to reclaim its own lock
+	if holder == owner {
+		return true, owner, c.rdb.Expire(ctx, types.RedisKeyGuardLock, types.GuardLockTTL).Err()
+	}
+
+	return false, holder, nil
+}
+
+// RefreshGuardLock extends the guard lock, but only while this owner holds it
+func (c *Client) RefreshGuardLock(ctx context.Context, owner string) error {
+	luaScript := `
+		if redis.call('GET', KEYS[1]) == ARGV[1] then
+			return redis.call('PEXPIRE', KEYS[1], ARGV[2])
+		end
+		return 0
+	`
+
+	result, err := c.rdb.Eval(ctx, luaScript, []string{types.RedisKeyGuardLock},
+		owner, types.GuardLockTTL.Milliseconds()).Result()
+	if err != nil {
+		return err
+	}
+
+	if refreshed, ok := result.(int64); ok && refreshed == 0 {
+		return fmt.Errorf("guard lock is no longer held by %s", owner)
+	}
+
+	return nil
+}
+
+// ReleaseGuardLock releases the guard lock if this owner still holds it
+func (c *Client) ReleaseGuardLock(ctx context.Context, owner string) error {
+	luaScript := `
+		if redis.call('GET', KEYS[1]) == ARGV[1] then
+			return redis.call('DEL', KEYS[1])
+		end
+		return 0
+	`
+
+	return c.rdb.Eval(ctx, luaScript, []string{types.RedisKeyGuardLock}, owner).Err()
+}
+
+// RecordGuardKill notes that the guard terminated a process, for rate limiting
+func (c *Client) RecordGuardKill(ctx context.Context, when time.Time, description string) error {
+	if err := c.rdb.ZAdd(ctx, types.RedisKeyGuardKills, &redis.Z{
+		Score:  float64(when.UnixNano()),
+		Member: fmt.Sprintf("%d %s", when.UnixNano(), description),
+	}).Err(); err != nil {
+		return err
+	}
+
+	return c.rdb.Expire(ctx, types.RedisKeyGuardKills, 24*time.Hour).Err()
+}
+
+// CountGuardKillsSince returns how many processes the guard terminated since
+// the given time
+func (c *Client) CountGuardKillsSince(ctx context.Context, since time.Time) (int, error) {
+	count, err := c.rdb.ZCount(ctx, types.RedisKeyGuardKills,
+		fmt.Sprintf("%d", since.UnixNano()), "+inf").Result()
+	if err != nil {
+		return 0, err
+	}
+	return int(count), nil
 }
 
 // Queue Management Operations

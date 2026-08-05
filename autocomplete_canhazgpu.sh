@@ -76,13 +76,28 @@ _canhazgpu_complete() {
     # Before '--', provide completion for canhazgpu itself
     case "$prev" in
         canhazgpu|chg)
-            COMPREPLY=( $(compgen -W "admin reserve release run status report web help --help --redis-host --redis-port --redis-db" -- "$cur") )
+            COMPREPLY=( $(compgen -W "admin reserve release run schedule status report queue guard violations web help --help --redis-host --redis-port --redis-db" -- "$cur") )
             ;;
         admin)
             COMPREPLY=( $(compgen -W "--gpus --force --help" -- "$cur") )
             ;;
         reserve)
-            COMPREPLY=( $(compgen -W "--gpus --gpu-ids -g -G --duration -d --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--gpus --gpu-ids -g -G --duration -d --idle-timeout --start --end --note -n --user -u --force -f --nonblock --wait -w --short -s --help" -- "$cur") )
+            ;;
+        schedule)
+            COMPREPLY=( $(compgen -W "--date --days --json --cancel --force --no-color --help" -- "$cur") )
+            ;;
+        guard)
+            COMPREPLY=( $(compgen -W "--enforce --dry-run --once --interval --grace --confirmations --warn-interval --max-warnings --kill-grace --max-kills-per-hour --channels --log-file --exclude-users --exclude-commands --min-memory --notify-holder --no-maintenance --help" -- "$cur") )
+            ;;
+        violations)
+            COMPREPLY=( $(compgen -W "--json --history --days --help" -- "$cur") )
+            ;;
+        --channels)
+            COMPREPLY=( $(compgen -W "process tty log wall process,tty,log" -- "$cur") )
+            ;;
+        --interval|--grace|--warn-interval|--kill-grace)
+            COMPREPLY=( $(compgen -W "15s 30s 60s 2m 5m 10m 30m" -- "$cur") )
             ;;
         release)
             COMPREPLY=( $(compgen -W "--gpu-ids -G --help" -- "$cur") )
@@ -102,11 +117,20 @@ _canhazgpu_complete() {
         --duration)
             COMPREPLY=( $(compgen -W "30m 1h 2h 4h 8h 1d 2d" -- "$cur") )
             ;;
+        --idle-timeout)
+            COMPREPLY=( $(compgen -W "0 5m 15m 30m 1h 2h" -- "$cur") )
+            ;;
+        --start|--end)
+            COMPREPLY=( $(compgen -W "now +1h +2h 09:00 12:00 14:00 18:00" -- "$cur") )
+            ;;
+        --date)
+            COMPREPLY=( $(compgen -W "today tomorrow +1d +2d" -- "$cur") )
+            ;;
         --days)
             COMPREPLY=( $(compgen -W "1 3 7 14 30 60 90" -- "$cur") )
             ;;
         *)
-            COMPREPLY=( $(compgen -W "admin reserve release run status report web help --help --redis-host --redis-port --redis-db" -- "$cur") )
+            COMPREPLY=( $(compgen -W "admin reserve release run schedule status report queue guard violations web help --help --redis-host --redis-port --redis-db" -- "$cur") )
             ;;
     esac
 }

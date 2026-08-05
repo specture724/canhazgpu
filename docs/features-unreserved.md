@@ -257,29 +257,55 @@ if violations:
 ```
 
 ### Automated Response
+
+Detecting and reacting to unreserved usage is built in — use `canhazgpu guard`
+instead of scraping `status` output:
+
+```bash
+# Warn offenders in the terminal running their job, every 15 seconds
+canhazgpu guard
+
+# Warn, then terminate processes that ignore the warnings
+canhazgpu guard --enforce
+
+# Single scan, for cron
+canhazgpu guard --once
+```
+
+The guard warns people where they will actually see it (the standard error of the
+offending process and their open terminals), repeats the warning on an interval,
+records every violation for later reporting, and optionally escalates to
+SIGINT → SIGTERM → SIGKILL. It also detects usage that `status` cannot show:
+a process belonging to somebody other than the GPU's reservation holder.
+
+**[→ Guard: Enforcing Reservations](features-guard.md)**
+
+For site-specific reactions such as mail or chat notifications, drive them from
+the recorded violations rather than from parsed table output:
+
 ```bash
 #!/bin/bash
-# unreserved_response.sh
+# unreserved_response.sh - run from cron, alongside 'canhazgpu guard'
 
-# Check for unreserved usage
-UNAUTHORIZED=$(canhazgpu status | grep "WITHOUT RESERVATION")
+canhazgpu violations --json > /tmp/violations.json
 
-if [ -n "$UNAUTHORIZED" ]; then
-    # Log the violation
-    echo "$(date): $UNAUTHORIZED" >> /var/log/gpu_violations.log
-    
-    # Extract and notify users
-    echo "$UNAUTHORIZED" | while read -r line; do
-        USERS=$(echo "$line" | sed -n 's/.*by users\? \([^-]*\) -.*/\1/p')
-        for USER in $USERS; do
-            # Send notification to user
-            echo "GPU Policy Violation: Please use 'canhazgpu reserve' for GPU access" | \
-                mail -s "GPU Usage Policy" "$USER@company.com"
-        done
+# Log the violations
+jq -r '.[] | "\(.kind) GPU \(.gpu_id) PID \(.pid) user \(.user) \(.memory_mb)MB"' \
+    /tmp/violations.json | while read -r line; do
+        echo "$(date): $line" >> /var/log/gpu_violations.log
     done
-    
-    # Alert administrators
-    echo "$UNAUTHORIZED" | mail -s "GPU Policy Violations Detected" admin@company.com
+
+# Notify users who have already been warned at least twice
+jq -r '.[] | select(.warn_count >= 2) | .user' /tmp/violations.json | sort -u | \
+    while read -r user; do
+        echo "GPU Policy: please reserve GPUs with 'canhazgpu reserve' or 'canhazgpu run'" | \
+            mail -s "GPU Usage Policy" "$user@company.com"
+    done
+
+# Alert administrators when anything is outstanding
+if [ -s /tmp/violations.json ] && [ "$(jq length /tmp/violations.json)" -gt 0 ]; then
+    jq -r '.[] | "\(.user) on GPU \(.gpu_id) (\(.memory_mb)MB)"' /tmp/violations.json | \
+        mail -s "GPU Policy Violations Detected" admin@company.com
 fi
 ```
 
@@ -292,10 +318,10 @@ fi
 - **Clean up** - release manual reservations when done
 
 ### For Administrators
-- **Monitor regularly** - set up automated checks for unreserved usage
+- **Run the guard** - `canhazgpu guard` detects and warns automatically, see [Guard](features-guard.md)
 - **Educate users** - provide training on proper GPU reservation practices
-- **Set clear policies** - document expected GPU usage procedures
-- **Respond quickly** - address unreserved usage promptly to prevent conflicts
+- **Set clear policies** - document expected GPU usage procedures, and whether the guard runs with `--enforce`
+- **Review the history** - `canhazgpu violations --history --days 30` shows who repeatedly bypasses the tool
 
 ### For System Integration
 - **Integrate with job schedulers** - ensure SLURM/PBS jobs use canhazgpu

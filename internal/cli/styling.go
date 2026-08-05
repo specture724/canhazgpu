@@ -61,6 +61,8 @@ func FormatStatus(status string) string {
 		return colorInUse.Sprint("● IN_USE   ")
 	case "UNRESERVED":
 		return colorUnreserved.Sprint("⚠ UNRESERVED")
+	case "FOREIGN":
+		return colorUnreserved.Sprint("⚠ FOREIGN  ")
 	case "ERROR":
 		return colorError.Sprint("✗ ERROR    ")
 	default:
