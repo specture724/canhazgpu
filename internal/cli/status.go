@@ -47,6 +47,7 @@ var (
 	showSummary  bool
 	noColorFlag  bool
 	verboseCount int
+	noSchedule   bool
 )
 
 func init() {
@@ -55,6 +56,7 @@ func init() {
 	statusCmd.Flags().StringVarP(&remoteName, "remote", "r", "", "Show status for a specific remote host")
 	statusCmd.Flags().BoolVarP(&showSummary, "summary", "s", false, "Show summary with GPU counts and availability")
 	statusCmd.Flags().BoolVar(&noColorFlag, "no-color", false, "Disable colored output")
+	statusCmd.Flags().BoolVar(&noSchedule, "no-schedule", false, "Do not print today's schedule after the status table")
 	statusCmd.Flags().CountVarP(&verboseCount, "verbose", "v",
 		"Show more process detail in DETAILS: -v adds process names (max 2), -vv shows all")
 	rootCmd.AddCommand(statusCmd)
@@ -114,6 +116,14 @@ func runStatusLocal(ctx context.Context, config *types.Config) error {
 		return displayGPUStatusJSON(statuses)
 	} else {
 		displayGPUStatusTable(statuses)
+
+		// Default: append today's booking schedule below the status table so
+		// one command shows both what is happening now and what is booked
+		if !noSchedule {
+			if err := runSchedule(ctx, scheduleOptions{date: "today", days: 1}); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to show schedule: %v\n", err)
+			}
+		}
 	}
 
 	return nil

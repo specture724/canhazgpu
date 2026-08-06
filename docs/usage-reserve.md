@@ -18,6 +18,7 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>]
 - `--duration, -d`: How long to reserve the GPUs
 - `--short, -s`: Output only GPU IDs (for use with command substitution)
 - `--idle-timeout`: Release the reservation if no GPU usage is detected for this long (default: 15m, `0` disables)
+- `--claim`: Reserve a GPU that only your own unreserved process is using; if anyone else is on it, wait in the queue
 - `--start`: Book the GPUs for a future time window instead of reserving now
 - `--end`: End of that window (defaults to `--duration` after the start)
 
@@ -57,6 +58,15 @@ canhazgpu reserve --gpus 1 --duration 8h --idle-timeout 0
 The clock starts when the reservation is made and resets whenever usage is detected, and `canhazgpu status` shows the countdown. `run` reservations are not affected — they end with their process.
 
 **[→ Idle Reservation Timeout](features-idle-timeout.md)**
+
+## Claiming a GPU You Are Already Using
+
+If you started a process on a GPU without reserving it, `--claim` lets you adopt that GPU: when every process on it belongs to you, the reservation succeeds immediately. If somebody else is also using it (or the GPU is reserved by someone else), the request behaves like any other `reserve` and waits in the queue until the GPU is free.
+
+```bash
+# Adopt the GPU your own running job is already using
+canhazgpu reserve --gpu-ids 2 --claim --duration 2h --note "adopt my job"
+```
 
 ## Booking a Time Slot
 

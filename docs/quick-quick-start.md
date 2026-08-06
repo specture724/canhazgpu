@@ -6,19 +6,11 @@
 
 ```bash
 canhazgpu status
-```
-
-主要看两列：
-
-- `STATUS`：`AVAILABLE` 空闲、`IN_USE` 有预约、`UNRESERVED` 有人没预约就在用
-- `MEMORY` / `UTIL`：显存占用和 GPU 利用率
-
-想看得更细：
-
-```bash
 canhazgpu status -v    # 显示进程名（最多两个）
 canhazgpu status -vv   # 显示所有进程
 ```
+
+`status` 默认还会在下面附带打印今天的 schedule 排期；只想看状态可以用 `canhazgpu status --no-schedule`。
 
 ## 2. 跑一个任务（推荐）
 
@@ -69,6 +61,12 @@ canhazgpu release --gpu-ids 0,2   # 只释放某几张卡
 ```
 
 几个小知识：
+
+- 如果忘了先预约、自己的进程已经跑在某张卡上，可以补一个预约；只有你自己的进程占着这张卡时会立即成功，还有别人的进程时会自动排队：
+
+```bash
+canhazgpu reserve --gpu-ids 6 --claim --duration 2h
+```
 
 - 预约时长要显式写，默认只有 30 分钟
 - 连续 15 分钟没有使用会自动释放，防止忘记

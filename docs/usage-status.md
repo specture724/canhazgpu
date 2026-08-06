@@ -13,7 +13,7 @@ canhazgpu status --json
 canhazgpu status -j
 ```
 
-No options are required for basic usage - the command automatically validates all GPUs and shows comprehensive status information in either table or JSON format.
+No options are required for basic usage - the command automatically validates all GPUs and shows comprehensive status information in either table or JSON format. By default the table output also prints **today's schedule** below the status table, so one command shows both what is happening now and what is booked later. Use `--no-schedule` to turn that off.
 
 ## Output Formats
 

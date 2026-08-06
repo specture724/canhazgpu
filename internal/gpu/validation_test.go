@@ -132,6 +132,39 @@ func TestDetectGPUUsage_Integration(t *testing.T) {
 	}
 }
 
+func TestFilterOutClaimableOwnedGPUs(t *testing.T) {
+	usage := map[int]*types.GPUUsage{
+		0: {GPUID: 0, MemoryMB: 5000, Processes: []types.GPUProcessInfo{
+			{PID: 1, User: "alice", MemoryMB: 4000},
+			{PID: 2, User: "alice", MemoryMB: 1000},
+		}},
+		1: {GPUID: 1, MemoryMB: 5000, Processes: []types.GPUProcessInfo{
+			{PID: 3, User: "alice", MemoryMB: 4000},
+			{PID: 4, User: "bob", MemoryMB: 1000},
+		}},
+		2: {GPUID: 2, MemoryMB: 5000, Processes: []types.GPUProcessInfo{
+			{PID: 5, User: "", MemoryMB: 4000},
+		}},
+		3: {GPUID: 3, MemoryMB: 5000, Processes: []types.GPUProcessInfo{}},
+	}
+
+	// GPU 0 is exclusively alice's and can be claimed; GPUs 1-3 cannot
+	result := FilterOutClaimableOwnedGPUs([]int{0, 1, 2, 3}, usage, "alice")
+	assert.ElementsMatch(t, []int{1, 2, 3}, result)
+
+	// Another user cannot claim anything alice owns
+	result = FilterOutClaimableOwnedGPUs([]int{0, 1, 2, 3}, usage, "carol")
+	assert.ElementsMatch(t, []int{0, 1, 2, 3}, result)
+
+	// No user means nothing is claimable
+	result = FilterOutClaimableOwnedGPUs([]int{0, 1, 2, 3}, usage, "")
+	assert.ElementsMatch(t, []int{0, 1, 2, 3}, result)
+
+	// No claimable GPUs keeps the list intact
+	result = FilterOutClaimableOwnedGPUs([]int{1, 2, 3}, usage, "alice")
+	assert.ElementsMatch(t, []int{1, 2, 3}, result)
+}
+
 func TestGetUnreservedGPUs(t *testing.T) {
 	// Test the threshold logic that determines unreserved usage
 	usage := map[int]*types.GPUUsage{

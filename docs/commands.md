@@ -345,6 +345,7 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>] [--nonb
 - `--wait`: Maximum time to wait for GPUs (e.g., 30m, 2h). Default: wait forever.
 - `--short`: Output only GPU IDs (for use with command substitution)
 - `--idle-timeout`: Release the reservation if no GPU usage is detected for this long (default: 15m, `0` disables)
+- `--claim`: Reserve a GPU that only your own unreserved process is using; if anyone else is on it, wait in the queue
 - `--start`: Book the GPUs for a future window starting then, instead of reserving now
 - `--end`: End of the window (defaults to `--duration` after the start)
 

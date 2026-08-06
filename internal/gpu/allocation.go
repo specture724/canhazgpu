@@ -110,6 +110,11 @@ func (ae *AllocationEngine) AllocateGPUs(ctx context.Context, request *types.All
 	// If force flag is set, clear unreserved GPUs list to allow allocation
 	if request.Force {
 		unreservedGPUs = []int{}
+	} else if request.ClaimOwned {
+		// With --claim, GPUs used only by the requester's own processes are
+		// claimable immediately; anything with other users' processes stays
+		// out of reach and the request queues for it as usual
+		unreservedGPUs = FilterOutClaimableOwnedGPUs(unreservedGPUs, usage, request.ActualUser)
 	}
 
 	// Hold back GPUs that a scheduled booking needs while this reservation
@@ -880,6 +885,8 @@ func (ae *AllocationEngine) tryAllocateForQueueEntry(ctx context.Context, queueE
 	unreservedGPUs := GetUnreservedGPUs(ctx, usage, ae.config.MemoryThreshold)
 	if request.Force {
 		unreservedGPUs = []int{}
+	} else if request.ClaimOwned {
+		unreservedGPUs = FilterOutClaimableOwnedGPUs(unreservedGPUs, usage, entry.ActualUser)
 	}
 
 	// GPUs needed by upcoming scheduled bookings stay out of reach

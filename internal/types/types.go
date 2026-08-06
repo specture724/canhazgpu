@@ -116,6 +116,7 @@ type AllocationRequest struct {
 	ReservationType string
 	ExpiryTime      *time.Time
 	Force           bool          // If true, allow reserving GPUs that are in unreserved use
+	ClaimOwned      bool          // If true, allow reserving unreserved GPUs used only by the requester's own processes
 	Note            string        // Optional note describing the reservation purpose
 	IdleTimeout     time.Duration // Auto-release a manual reservation after this long without GPU usage (0 = disabled)
 	BlockedGPUs     []int         // GPUs held back for upcoming scheduled bookings (filled in by the allocation engine)

@@ -79,6 +79,10 @@ func TestFormatUnreservedDetails(t *testing.T) {
 	assert.Empty(t, formatUnreservedDetails(noProcesses, 2))
 }
 
+func TestStatusCmd_HasNoScheduleFlag(t *testing.T) {
+	assert.NotNil(t, statusCmd.Flags().Lookup("no-schedule"), "status should expose --no-schedule")
+}
+
 func TestDisplayGPUStatusTable(t *testing.T) {
 	// Create sample GPU status data
 	statuses := []gpu.GPUStatusInfo{

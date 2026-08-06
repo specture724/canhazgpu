@@ -170,6 +170,47 @@ func formatProcessInfo(processes []types.GPUProcessInfo) string {
 	return strings.Join(parts, ", ")
 }
 
+// FilterOutClaimableOwnedGPUs removes GPUs whose unreserved processes all
+// belong to user from the unreserved list, so their owner can claim them
+// immediately. A GPU with any unowned or unidentified process stays in the
+// list (and therefore stays out of reach for the claiming request).
+func FilterOutClaimableOwnedGPUs(unreserved []int, usage map[int]*types.GPUUsage, user string) []int {
+	if user == "" {
+		return unreserved
+	}
+
+	claimable := make(map[int]bool)
+	for _, gpuID := range unreserved {
+		gpuUsage := usage[gpuID]
+		if gpuUsage == nil || len(gpuUsage.Processes) == 0 {
+			continue
+		}
+
+		onlyMine := true
+		for _, proc := range gpuUsage.Processes {
+			if proc.User == "" || proc.User != user {
+				onlyMine = false
+				break
+			}
+		}
+		if onlyMine {
+			claimable[gpuID] = true
+		}
+	}
+
+	if len(claimable) == 0 {
+		return unreserved
+	}
+
+	filtered := make([]int, 0, len(unreserved))
+	for _, gpuID := range unreserved {
+		if !claimable[gpuID] {
+			filtered = append(filtered, gpuID)
+		}
+	}
+	return filtered
+}
+
 // GetUnreservedGPUs returns list of GPU IDs that are in use without proper reservations
 func GetUnreservedGPUs(ctx context.Context, usage map[int]*types.GPUUsage, memoryThreshold int) []int {
 	var unreserved []int

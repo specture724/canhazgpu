@@ -92,6 +92,7 @@ automatically expire after the specified duration.`,
 			gpuIDs:         viper.GetIntSlice("reserve.gpu-ids"),
 			durationStr:    viper.GetString("reserve.duration"),
 			force:          viper.GetBool("reserve.force"),
+			claim:          viper.GetBool("reserve.claim"),
 			note:           viper.GetString("reserve.note"),
 			customUser:     viper.GetString("reserve.user"),
 			nonblock:       viper.GetBool("reserve.nonblock"),
@@ -112,6 +113,7 @@ type reserveOptions struct {
 	gpuIDs         []int
 	durationStr    string
 	force          bool
+	claim          bool
 	note           string
 	customUser     string
 	nonblock       bool
@@ -127,6 +129,7 @@ func init() {
 	reserveCmd.Flags().IntSliceP("gpu-ids", "G", nil, "Specific GPU IDs to reserve (comma-separated, e.g., 1,3,5)")
 	reserveCmd.Flags().StringP("duration", "d", "30m", "Duration to reserve GPUs (e.g., 30m, 2h, 1d)")
 	reserveCmd.Flags().BoolP("force", "f", false, "Force reservation even if GPU is in unreserved use")
+	reserveCmd.Flags().Bool("claim", false, "Reserve a GPU that only your own unreserved process is using; if anyone else is on it, wait in the queue")
 	reserveCmd.Flags().StringP("note", "n", "", "Optional note describing the reservation purpose")
 	reserveCmd.Flags().StringP("user", "u", "", "Custom user identifier (e.g., your name when using a shared account)")
 	reserveCmd.Flags().Bool("nonblock", false, "Fail immediately if GPUs are unavailable instead of waiting in queue")
@@ -237,6 +240,7 @@ func runReserve(ctx context.Context, opts reserveOptions) error {
 			ReservationType: types.ReservationTypeManual,
 			ExpiryTime:      &expiryTime,
 			Force:           opts.force,
+			ClaimOwned:      opts.claim,
 			Note:            opts.note,
 			IdleTimeout:     idleTimeout,
 		},
