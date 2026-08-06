@@ -271,7 +271,7 @@ canhazgpu status >> gpu_usage_log.txt
 
 #### Stale Reservations
 ```bash
-3    IN_USE      alice    8h 45m 0s    MANUAL  -                        expires in 0h 15m 0s    no usage detected
+3   │ ● IN_USE    │ alice  │ 8h 45m    │ MANUAL │ expires in 15m, idle 8h          │ no usage detected │ - │ 0%
 ```
 - Long reservation with no actual usage
 - User likely forgot to release
@@ -279,7 +279,7 @@ canhazgpu status >> gpu_usage_log.txt
 
 #### Heartbeat Issues
 ```bash
-1    IN_USE      bob      2h 30m 0s    RUN     codellama/CodeLlama-7b-Instruct-hf        heartbeat 0h 5m 30s ago 8452MB, 1 processes
+1   │ ● IN_USE    │ bob    │ 2h 30m    │ RUN    │ heartbeat 5m 30s ago, processes: PID 123 (2h30m) │ 8452MB, 1 processes │ - │ 0%
 ```
 - Last heartbeat was 5+ minutes ago (should be <1 minute)
 - Possible network issues or process problems
@@ -287,8 +287,8 @@ canhazgpu status >> gpu_usage_log.txt
 
 #### Unreserved Usage Patterns
 ```bash
-2    UNRESERVED  user charlie  -       -       microsoft/DialoGPT-large     used by PID 12345 (python3)      12288MB, 1 processes
-5    UNRESERVED  user charlie  -       -       NousResearch/Nous-Hermes-2-Yi-34B   used by PID 23456 (jupyter)       8192MB, 1 processes
+2   │ ⚠ UNRESERVED │ charlie │ used by PID 12345 (python3, 2h3m)      │ 12288MB, 1 processes │ - │ 0%
+5   │ ⚠ UNRESERVED │ charlie │ used by PID 23456 (jupyter, 1h5m)       │ 8192MB, 1 processes  │ - │ 0%
 ```
 - Same user using multiple GPUs without reservation
 - High memory usage indicates active workloads
@@ -297,14 +297,14 @@ canhazgpu status >> gpu_usage_log.txt
 ### Team Coordination
 
 #### Planning Allocations
-```bash
+```text
 ❯ canhazgpu status
-GPU  STATUS     USER   DURATION   TYPE    MODEL            DETAILS                  MEMORY
----  ------     ----   --------   ----    -----            -------                  ----------
-0    AVAILABLE  -      -          -       -                free for 2h 0m 0s       1MB used     # Good candidate
-1    AVAILABLE  -      -          -       -                free for 0h 30m 0s      1MB used     # Recently used
-2    IN_USE     alice  0h 5m 0s   RUN     teknium/OpenHermes-2.5-Mistral-7B  heartbeat 0h 0m 3s ago   2048MB, 1 processes  # Just started
-3    IN_USE     bob    3h 45m 0s  MANUAL  -                expires in 0h 15m 0s    no usage detected    # Expiring soon
+ GPU │ STATUS      │ USER    │ DURATION │ TYPE   │ DETAILS                                    │ MEMORY               │ NOTE │ UTIL
+─────┼─────────────┼─────────┼──────────┼────────┼────────────────────────────────────────────┼──────────────────────┼──────┼──────
+ 0   │ ● AVAILABLE │ -       │ -        │ -      │ free for 2h                                │ 1MB used             │ -    │ 0%   # Good candidate
+ 1   │ ● AVAILABLE │ -       │ -        │ -      │ free for 30m                               │ 1MB used             │ -    │ 0%   # Recently used
+ 2   │ ● IN_USE    │ alice   │ 5m       │ RUN    │ heartbeat 3s ago, processes: PID 123 (5m)  │ 2048MB, 1 processes  │ -    │ 0%   # Just started
+ 3   │ ● IN_USE    │ bob     │ 3h 45m   │ MANUAL │ expires in 15m, idle 3h                     │ no usage detected    │ -    │ 0%   # Expiring soon
 ```
 
 From this, you can see:
@@ -331,18 +331,17 @@ Clear indication that unreserved usage is reducing available capacity.
 #!/bin/bash
 # gpu_metrics.sh - Export metrics for monitoring
 
-STATUS=$(canhazgpu status)
-
-# Count GPU states
-AVAILABLE=$(echo "$STATUS" | grep "AVAILABLE" | wc -l)
-IN_USE=$(echo "$STATUS" | grep "IN USE by" | wc -l)
-UNAUTHORIZED=$(echo "$STATUS" | grep "WITHOUT RESERVATION" | wc -l)
+# Count GPU states from JSON
+AVAILABLE=$(canhazgpu status --json | jq '[.[] | select(.status == "AVAILABLE")] | length')
+IN_USE=$(canhazgpu status --json | jq '[.[] | select(.status == "IN_USE")] | length')
+UNAUTHORIZED=$(canhazgpu status --json | jq '[.[] | select(.status == "UNRESERVED")] | length')
+TOTAL=$(canhazgpu status --json | jq 'length')
 
 # Export metrics
 echo "gpu_available $AVAILABLE"
-echo "gpu_in_use $IN_USE"  
+echo "gpu_in_use $IN_USE"
 echo "gpu_unreserved $UNAUTHORIZED"
-echo "gpu_total $((AVAILABLE + IN_USE + UNAUTHORIZED))"
+echo "gpu_total $TOTAL"
 ```
 
 #### Log Analysis
@@ -354,8 +353,8 @@ while true; do
 done
 
 # Analyze usage patterns
-grep "AVAILABLE" gpu_monitoring.log | wc -l
-grep "WITHOUT RESERVATION" gpu_monitoring.log | cut -d: -f2- | sort | uniq -c
+# Analyze usage patterns from JSON snapshots
+grep -h "gpu_id" gpu_monitoring.log | jq -r '.[] | "\(.gpu_id) \(.status)"' | sort | uniq -c
 ```
 
 ### Automated Alerts
@@ -365,12 +364,11 @@ grep "WITHOUT RESERVATION" gpu_monitoring.log | cut -d: -f2- | sort | uniq -c
 #!/bin/bash
 # unreserved_alert.sh
 
-STATUS=$(canhazgpu status)
-UNAUTHORIZED=$(echo "$STATUS" | grep "WITHOUT RESERVATION")
+UNAUTHORIZED=$(canhazgpu status --json | jq -r '.[] | select(.status == "UNRESERVED")')
 
 if [ -n "$UNAUTHORIZED" ]; then
     echo "ALERT: Unreserved GPU usage detected!"
-    echo "$UNAUTHORIZED"
+    echo "$UNAUTHORIZED" | jq -r '"\(.gpu_id) \(.unreserved_users | join(",")) \(.memory_mb)MB"'
     
     # Send notification (customize as needed)
     echo "$UNAUTHORIZED" | mail -s "GPU Policy Violation" admin@company.com
@@ -481,29 +479,20 @@ check_unreserved_usage()
 #### Legacy Text Parsing
 ```python
 import subprocess
-import re
+import json
 import time
 
-def get_gpu_status_legacy():
-    """Parse canhazgpu status text output (legacy method)"""
-    result = subprocess.run(['canhazgpu', 'status'], 
+def get_gpu_status():
+    """Parse canhazgpu status JSON output"""
+    result = subprocess.run(['canhazgpu', 'status', '--json'],
                           capture_output=True, text=True)
-    
     if result.returncode != 0:
         raise RuntimeError(f"Status check failed: {result.stderr}")
-    
-    status = {}
-    for line in result.stdout.strip().split('\n'):
-        if line.startswith('GPU '):
-            gpu_id = int(line.split(':')[0].split()[1])
-            if 'AVAILABLE' in line:
-                status[gpu_id] = 'available'
-            elif 'WITHOUT RESERVATION' in line:
-                status[gpu_id] = 'unreserved'  
-            elif 'IN USE' in line:
-                status[gpu_id] = 'reserved'
-    
-    return status
+
+    return {
+        gpu['gpu_id']: gpu['status']
+        for gpu in json.loads(result.stdout)
+    }
 
 def wait_for_gpus(count=1, timeout=3600):
     """Wait for specified number of GPUs to become available"""

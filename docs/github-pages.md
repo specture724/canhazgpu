@@ -115,7 +115,7 @@ nav:
   - Features:
     - GPU Validation: features-validation.md
     - Unauthorized Usage Detection: features-unauthorized.md
-    - LRU Allocation: features-lru.md
+    - MRU-per-User Allocation: features-mru-per-user.md
   - Administration:
     - Setup & Configuration: installation.md
     - Troubleshooting: admin-troubleshooting.md

@@ -62,7 +62,7 @@ run:
 # Default settings for 'reserve' command  
 reserve:
   gpus: 1
-  duration: "8h"
+  duration: "2h"
   # Release a manual reservation after this long without GPU usage ("0" disables)
   idle-timeout: "15m"
 
@@ -226,7 +226,7 @@ run:
 # Reserve command defaults
 reserve:
   gpus: 1
-  duration: "8h"
+  duration: "2h"
   idle-timeout: "15m"  # Release reservations nobody uses
 
 # Status and reporting

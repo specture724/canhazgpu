@@ -17,7 +17,7 @@ The `--` separator is important - it tells canhazgpu where its options end and y
 - `--timeout, -t`: Maximum time to run command before killing it (optional)
 
 !!! note "GPU Selection"
-    - Use `--gpus` to let canhazgpu select GPUs using the LRU algorithm
+    - Use `--gpus` to let canhazgpu select GPUs using the MRU-per-user strategy (with LRU fallback)
     - Use `--gpu-ids` when you need specific GPUs (e.g., for hardware requirements)
     - You can use both options together if `--gpus` matches the GPU ID count or is 1 (default)
 
@@ -81,7 +81,7 @@ When you run `canhazgpu run --gpus 2 -- python train.py`, here's what happens:
 
 1. **GPU Validation**: Uses nvidia-smi to check actual GPU usage
 2. **Conflict Detection**: Identifies GPUs in use without proper reservations
-3. **Allocation**: Reserves 2 GPUs using LRU (Least Recently Used) strategy
+3. **Allocation**: Reserves 2 GPUs using the MRU-per-user strategy (with LRU fallback)
 4. **Environment Setup**: Sets `CUDA_VISIBLE_DEVICES` to the allocated GPU IDs (e.g., "0,3")
 5. **Command Execution**: Runs `python train.py` with the GPU environment
 6. **Heartbeat**: Maintains reservation with periodic heartbeats while running

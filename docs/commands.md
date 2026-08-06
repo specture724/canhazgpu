@@ -146,6 +146,7 @@ canhazgpu status -j
 **Options:**
 - `-j, --json`: Output status as JSON array instead of table format
 - `-v, --verbose`: More process detail in DETAILS. `-v` adds process names (max 2), `-vv` shows all
+- `--no-schedule`: Do not print today's schedule after the status table
 
 **[→ Detailed Status Guide](usage-status.md)**
 
@@ -373,7 +374,7 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>] [--nonb
 
 **Examples:**
 ```bash
-# Reserve 1 GPU for 8 hours (default)
+# Reserve 1 GPU for 30 minutes (default)
 canhazgpu reserve
 
 # Reserve 2 GPUs for 4 hours

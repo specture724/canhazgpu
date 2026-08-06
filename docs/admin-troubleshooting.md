@@ -325,24 +325,24 @@ canhazgpu admin --gpus 8 --force
 
 ### Stale Heartbeats
 **Symptoms:**
-```bash
+```text
 ❯ canhazgpu status
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-1   in use    alice    3h 0m 0s    run                      heartbeat 15m 30s ago     
+ GPU │ STATUS    │ USER  │ DURATION │ TYPE │ DETAILS                       │ MEMORY            │ NOTE │ UTIL
+─────┼───────────┼───────┼──────────┼──────┼───────────────────────────────┼───────────────────┼──────┼──────
+ 1   │ ● IN_USE  │ alice │ 3h 0m    │ RUN  │ heartbeat 15m 30s ago         │ no usage detected │ -    │ 0%
 ```
 
 **Analysis:**
 - Heartbeat should update every ~60 seconds
 - Heartbeats >5 minutes old indicate problems
-- GPU will auto-release after 15 minutes without heartbeat
+- GPU will auto-release after 5 minutes without heartbeat
 
 **Solutions:**
 ```bash
 # Check if process is still running
 ps aux | grep alice | grep python
 
-# If process died, wait for auto-cleanup (15 min timeout)
+# If process died, wait for auto-cleanup (5 min timeout)
 # Or release immediately with: canhazgpu release --gpu-ids <id>
 # If process is stuck, user should kill it
 
@@ -353,11 +353,11 @@ redis-cli
 
 ### Orphaned Processes
 **Symptoms:**
-```bash
+```text
 ❯ canhazgpu status
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-0   available          free for 5m                                                    2048MB, 1 processes
+ GPU │ STATUS       │ USER │ DETAILS                              │ MEMORY               │ NOTE │ UTIL
+─────┼──────────────┼──────┼──────────────────────────────────────┼──────────────────────┼──────┼──────
+ 0   │ ⚠ UNRESERVED │ -    │ used by PID 12345 (python3, 2h3m)     │ 2048MB, 1 processes  │ -    │ 0%
 ```
 
 - GPU shows as available but has active processes
@@ -402,11 +402,11 @@ sudo chmod +x /usr/local/bin/canhazgpu
 
 ### Process Owner Detection Fails
 **Symptoms:**
-```bash
+```text
 ❯ canhazgpu status
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-2   in use    unknown                                       WITHOUT RESERVATION        1024MB used by PID 12345 (unknown process)
+ GPU │ STATUS       │ USER    │ DETAILS                                  │ MEMORY               │ NOTE │ UTIL
+─────┼──────────────┼─────────┼──────────────────────────────────────────┼──────────────────────┼──────┼──────
+ 2   │ ⚠ UNRESERVED │ unknown │ used by PID 12345 (unknown process, 2h3m)│ 1024MB, 1 processes  │ -    │ 0%
 ```
 
 **Solutions:**
@@ -560,8 +560,8 @@ if [ $STALE_HEARTBEATS -gt 0 ]; then
     echo "WARNING: $STALE_HEARTBEATS stale heartbeats detected"
 fi
 
-UNAUTHORIZED=$(canhazgpu status | grep "WITHOUT RESERVATION" | wc -l)
-if [ $UNAUTHORIZED -gt 0 ]; then
+UNAUTHORIZED=$(canhazgpu status --json | jq '[.[] | select(.status == "UNRESERVED")] | length')
+if [ "$UNAUTHORIZED" -gt 0 ]; then
     echo "WARNING: $UNAUTHORIZED unreserved GPU usage detected"
 fi
 ```

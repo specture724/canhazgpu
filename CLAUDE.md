@@ -27,7 +27,7 @@ The tool is a Go application structured as a CLI with internal packages that imp
 - **GPU Provider System**: Unified abstraction supporting both NVIDIA (nvidia-smi) and AMD (amd-smi) GPUs
 - **GPU Allocation Logic**: Tracks GPU state with JSON objects containing user, timestamps, heartbeat data, and reservation types
 - **Heartbeat System**: Background goroutine sends periodic heartbeats (60s interval) to maintain run-type reservations
-- **Auto-cleanup**: GPUs are automatically released when heartbeat expires (15 min timeout), manual reservations expire, or processes terminate
+- **Auto-cleanup**: GPUs are automatically released when heartbeat expires (5 min timeout), manual reservations expire, or processes terminate
 - **Idle Timeout**: Manual reservations with no detected GPU usage for their idle timeout (default 15 min) are released automatically; run-type reservations are exempt since they end with their process
 - **Scheduled Bookings**: Meeting-room style bookings claim specific GPUs for a future window, block conflicting reservations beforehand, and preempt whatever still holds those GPUs when the window starts
 - **Guard/Enforcement**: Optional daemon (`canhazgpu guard`) compares process owners against reservation holders, warns offenders by writing into their process's stderr and terminals, escalates to SIGINT/SIGTERM/SIGKILL with `--enforce`, and records violations for reporting
@@ -90,6 +90,9 @@ sudo ln -s /usr/local/bin/canhazgpu /usr/local/bin/chg
 
 # Manual reservation of specific GPU IDs
 ./build/canhazgpu reserve --gpu-ids 0,2,4 --duration 2h
+
+# Claim a GPU that only your own unreserved process is using
+./build/canhazgpu reserve --gpu-ids 2 --claim --duration 2h
 
 # Release manual reservations
 ./build/canhazgpu release
@@ -165,7 +168,7 @@ redis-cli get "canhazgpu:provider"
 
 ## Dependencies
 
-- Go 1.23+ with modules:
+- Go 1.25+ with modules:
   - `github.com/go-redis/redis/v8`: Redis client library
   - `github.com/spf13/cobra`: CLI framework
   - `github.com/spf13/viper`: Configuration management
@@ -284,7 +287,10 @@ redis-cli get "canhazgpu:provider"
 
 - Real-time validation shows actual vs reserved GPU usage
 - User accountability displays specific users running unreserved processes
-- Table format with GPU, STATUS, USER, DURATION, TYPE, MODEL, DETAILS, VALIDATION columns
+- Table format with GPU, STATUS, USER, DURATION, TYPE, DETAILS, MEMORY, MODEL, NOTE, UTIL columns
+- Default `status` output also prints today's schedule; `--no-schedule` disables it
+- DETAILS shows PID and elapsed time per process; `-v` adds process names (max 2), `-vv` shows all
+- `free for` time accounts for the last observed usage, including unreserved activity
 - Validation info format: `XMB, Y processes` (no prefix)
 - "UNRESERVED" status for unreserved usage
 - Model detection displays identified AI models in MODEL column

@@ -274,33 +274,41 @@ canhazgpu:gpu:{id}              # Individual GPU state (JSON)
 
 ### GPU State Object
 
-**Available GPU:**
+**Available GPU:** (`last_activity` is recorded when unreserved usage was last observed, so the `free for` clock starts from real occupancy)
 ```json
 {
-  "last_released": 1672531200.123
+  "last_released": 1672531200.123,
+  "last_activity": 1672531260.456
 }
 ```
 
-**Reserved GPU:**
+**Reserved GPU (run-type):**
 ```json
 {
   "user": "alice",
+  "actual_user": "alice",
   "start_time": 1672531200.123,
   "last_heartbeat": 1672531260.456,
   "type": "run",
-  "expiry_time": null
+  "note": "training"
 }
 ```
 
 **Manual Reservation:**
 ```json
 {
-  "user": "bob", 
+  "user": "bob",
+  "actual_user": "bob",
   "start_time": 1672531200.123,
   "type": "manual",
-  "expiry_time": 1672559600.789
+  "expiry_time": 1672559600.789,
+  "idle_timeout": 900,
+  "last_activity": 1672531200.123,
+  "note": "interactive"
 }
 ```
+
+Reservations created by a scheduled booking also carry `booking_id`; queue partial allocations carry `partial_queue_id` until the request is complete.
 
 ## Concurrency and Race Conditions
 

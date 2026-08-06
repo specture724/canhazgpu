@@ -10,7 +10,7 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>]
 
 **Defaults:**
 - `--gpus`: 1 GPU
-- `--duration`: 8 hours
+- `--duration`: 30 minutes
 
 **Options:**
 - `--gpus, -g`: Number of GPUs to reserve
@@ -23,7 +23,7 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>]
 - `--end`: End of that window (defaults to `--duration` after the start)
 
 !!! note "GPU Selection"
-    - Use `--gpus` to let canhazgpu select GPUs using the LRU algorithm
+    - Use `--gpus` to let canhazgpu select GPUs using the MRU-per-user strategy (with LRU fallback)
     - Use `--gpu-ids` when you need specific GPUs (e.g., for hardware requirements)
     - You can use both options together if `--gpus` matches the GPU ID count or is 1 (default)
 
@@ -109,7 +109,7 @@ canhazgpu reserve --gpu-ids 0,2 --duration 4h
 
 ### Extended Work Sessions
 ```bash
-# Full day development (8 hours, default)
+# Full day (8 hours)
 canhazgpu reserve
 
 # Multi-day project work
@@ -207,10 +207,10 @@ Reserved 2 GPU(s): [1, 3] for 4h 0m 0s
 
 # Check current allocations
 ❯ canhazgpu status
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-1   in use    alice    30s         manual                   expires in 3h 59m 30s     
-3   in use    alice    30s         manual                   expires in 3h 59m 30s     
+ GPU │ STATUS    │ USER  │ DURATION │ TYPE   │ DETAILS          │ MEMORY            │ NOTE │ UTIL
+─────┼───────────┼───────┼──────────┼────────┼──────────────────┼───────────────────┼──────┼──────
+ 1   │ ● IN_USE  │ alice │ 30s      │ MANUAL │ expires in 3h 59m │ no usage detected │ -    │ 0%
+ 3   │ ● IN_USE  │ alice │ 30s      │ MANUAL │ expires in 3h 59m │ no usage detected │ -    │ 0%
 
 # Manually set CUDA_VISIBLE_DEVICES
 export CUDA_VISIBLE_DEVICES=1,3
@@ -220,17 +220,14 @@ python your_script.py
 ### Expiration and Cleanup
 Manual reservations automatically expire after the specified duration:
 
-```bash
+```text
 ❯ canhazgpu status
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-1   in use    alice    3h 58m 45s  manual                   expires in 1m 15s         
-
-# After expiration
-❯ canhazgpu status  
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-1   available          free for 5s                                                    
+ GPU │ STATUS      │ USER    │ DURATION │ TYPE   │ DETAILS                    │ MEMORY            │ NOTE │ UTIL
+─────┼─────────────┼─────────┼──────────┼────────┼────────────────────────────┼───────────────────┼──────┼──────
+ 1   │ ● IN_USE    │ alice   │ 30s      │ MANUAL │ expires in 3h 59m          │ no usage detected │ -    │ 0%
+ 2   │ ● IN_USE    │ bob     │ 1h 30m   │ RUN    │ heartbeat 5s ago           │ 8452MB, 1 processes│ -   │ 0%
+ 3   │ ● IN_USE    │ alice   │ 30s      │ MANUAL │ expires in 3h 59m          │ no usage detected │ -    │ 0%
+ 0   │ ● AVAILABLE │ -       │ -        │ -      │ free for 1h 15m            │ 4MB used          │ -    │ 0%
 ```
 
 ## Releasing Reservations
@@ -246,14 +243,14 @@ Released 2 GPU(s): [1, 3]
 ### Checking Your Reservations
 Use `status` to see your current reservations:
 
-```bash
+```text
 ❯ canhazgpu status
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-0   available          free for 1h 15m 30s                                           
-1   in use    alice    45m 12s     manual                   expires in 3h 14m 48s     # Your reservation
-2   in use    bob      1h 30m 0s   run     pytorch-model    heartbeat 5s ago          
-3   in use    alice    45m 12s     manual                   expires in 3h 14m 48s     # Your reservation
+ GPU │ STATUS      │ USER    │ DURATION │ TYPE   │ DETAILS                    │ MEMORY            │ NOTE │ UTIL
+─────┼─────────────┼─────────┼──────────┼────────┼────────────────────────────┼───────────────────┼──────┼──────
+ 1   │ ● IN_USE    │ alice   │ 30s      │ MANUAL │ expires in 3h 59m          │ no usage detected │ -    │ 0%
+ 2   │ ● IN_USE    │ bob     │ 1h 30m   │ RUN    │ heartbeat 5s ago           │ 8452MB, 1 processes│ -   │ 0%
+ 3   │ ● IN_USE    │ alice   │ 30s      │ MANUAL │ expires in 3h 59m          │ no usage detected │ -    │ 0%
+ 0   │ ● AVAILABLE │ -       │ -        │ -      │ free for 1h 15m            │ 4MB used          │ -    │ 0%
 ```
 
 ## Error Handling

@@ -42,16 +42,16 @@ canhazgpu run --memory-threshold 512 --gpus 1 -- python train.py
 ## Validation Output
 
 ### Status Display
-The validation information appears in the VALIDATION column of the status output:
+The validation information appears in the **MEMORY** column of the status output:
 
-```bash
+```text
 ❯ canhazgpu status
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-0   available          free for 30m                                                   45MB used
-1   in use    alice    15m 30s     run     llama-2-7b-chat  heartbeat 5s ago          8452MB, 1 processes
-2   in use    bob                                           WITHOUT RESERVATION        1024MB used by PID 12345 (python3)
-3   in use    charlie  1h 2m 15s   manual                   expires in 3h 15m 45s     no usage detected
+ GPU │ STATUS      │ USER    │ DURATION │ TYPE   │ DETAILS                                        │ MEMORY               │ MODEL           │ NOTE │ UTIL
+─────┼─────────────┼─────────┼──────────┼────────┼────────────────────────────────────────────────┼──────────────────────┼─────────────────┼──────┼──────
+ 0   │ ● AVAILABLE │ -       │ -        │ -      │ free for 0h 30m 15s                            │ 45MB used            │ -               │ -    │ 0%
+ 1   │ ● IN_USE    │ alice   │ 0h 15m   │ RUN    │ heartbeat 5s ago, processes: PID 12345 (2h3m)  │ 8452MB, 1 processes  │ llama-2-7b-chat │ -    │ 87%
+ 2   │ ⚠ UNRESERVED│ bob     │ -        │ -      │ used by PID 12345 (python3, 2h3m)              │ 1024MB, 1 processes  │ -               │ -    │ 42%
+ 3   │ ● IN_USE    │ charlie │ 1h 2m    │ MANUAL │ expires in 3h 15m, idle 10m                     │ no usage detected    │ -               │ -    │ 5%
 ```
 
 ### Validation States
@@ -83,12 +83,12 @@ no usage detected
   - Stale reservation (should be cleaned up)
 
 #### Unauthorized Usage Detail
-```bash
-by user bob - 1024MB used by PID 12345 (python3), PID 67890 (jupyter)
+```text
+ 2   │ ⚠ UNRESERVED │ bob │ - │ - │ used by PID 12345 (python3, 2h3m), PID 67890 (jupyter, 5m) │ 1024MB, 2 processes
 ```
-- Shows specific user running unreserved processes
-- Lists PIDs and process names
-- Memory usage quantifies the unreserved resource consumption
+- `UNRESERVED` status identifies the GPU as used without a reservation
+- DETAILS lists PIDs and process names (with `-v`/`-vv`), plus how long they have been running
+- MEMORY quantifies the unreserved resource consumption
 
 ## Validation Benefits
 
@@ -99,25 +99,25 @@ Without validation, you might have scenarios like:
 - New reservation could conflict with existing usage
 
 With validation:
-- GPU 1 would show "IN USE WITHOUT RESERVATION"
+- GPU 1 would show `UNRESERVED`
 - GPU 1 is automatically excluded from allocation
 - Prevents conflicts and out-of-memory errors
 
 ### User Accountability
-```bash
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-2   in use    bob                                           WITHOUT RESERVATION        1024MB used by PID 12345 (python3)
-5   in use    charlie                                       WITHOUT RESERVATION        8GB used by PID 23456 (jupyter)
+```text
+ GPU │ STATUS       │ USER    │ DETAILS                               │ MEMORY
+─────┼──────────────┼─────────┼───────────────────────────────────────┼─────────────────────
+ 2   │ ⚠ UNRESERVED │ bob     │ used by PID 12345 (python3, 2h3m)     │ 1024MB, 1 processes
+ 5   │ ⚠ UNRESERVED │ charlie │ used by PID 23456 (jupyter, 1h5m)     │ 8192MB, 1 processes
 ```
 
 Clear identification of which users need to be contacted about policy compliance.
 
 ### Resource Optimization
-```bash
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-3   in use    alice    8h 0m 0s    manual                   expires in 30m 0s         no usage detected
+```text
+ GPU │ STATUS    │ USER  │ DURATION │ TYPE   │ DETAILS                    │ MEMORY            │ NOTE │ UTIL
+─────┼───────────┼───────┼──────────┼────────┼────────────────────────────┼───────────────────┼──────┼──────
+ 3   │ ● IN_USE  │ alice │ 8h 0m    │ MANUAL │ expires in 30m, idle 10m    │ no usage detected │ -    │ 0%
 ```
 
 Identifies stale reservations that could be released early to improve resource availability.
@@ -147,10 +147,10 @@ The error message indicates:
 ## Validation Edge Cases
 
 ### Multiple Users Per GPU
-```bash
-GPU STATUS    USER            DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- --------------- ----------- ------- ---------------- -------------------------- ---------------------
-4   in use    alice,bob,charlie                                    WITHOUT RESERVATION        2048MB used by PID 12345 (python3), PID 23456 (pytorch) and 2 more
+```text
+ GPU │ STATUS       │ USER              │ DETAILS                                                        │ MEMORY
+─────┼──────────────┼───────────────────┼───────────────────────────────────────────────────────────────┼─────────────────────
+ 4   │ ⚠ UNRESERVED │ alice,bob,charlie │ used by PID 12345 (python3, 2h3m), PID 23456 (pytorch, 5m) ... │ 2048MB, 4 processes
 ```
 
 When multiple users have processes on the same GPU:
@@ -160,10 +160,10 @@ When multiple users have processes on the same GPU:
 
 ### Process Information Limitations
 Sometimes process details may be limited:
-```bash
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-4   in use    unknown                                       WITHOUT RESERVATION        1024MB used by PID 12345 (unknown process)
+```text
+ GPU │ STATUS       │ USER    │ DETAILS                                    │ MEMORY
+─────┼──────────────┼─────────┼────────────────────────────────────────────┼─────────────────────
+ 4   │ ⚠ UNRESERVED │ unknown │ used by PID 12345 (unknown process, 2h3m)  │ 1024MB, 1 processes
 ```
 
 This can happen when:
@@ -181,7 +181,7 @@ Some systems may have higher baseline GPU memory usage due to:
 - Persistent CUDA contexts
 - Background ML services
 
-The 1GB threshold can be adjusted if needed (currently hardcoded).
+The default threshold is **100 MB** and can be adjusted with `--memory-threshold` or `memory.threshold` in the configuration.
 
 ## Validation Performance
 
@@ -197,11 +197,11 @@ The 1GB threshold can be adjusted if needed (currently hardcoded).
 
 ## Integration with Other Features
 
-### LRU Allocation
-Validation integrates with LRU (Least Recently Used) allocation:
-- Only validated available GPUs are considered for LRU ranking
-- Unauthorized GPUs are excluded from LRU pool
-- Last release timestamps are preserved across validation
+### MRU-per-User Allocation
+Validation integrates with the allocation strategy:
+- Only validated available GPUs are considered for ranking
+- Unauthorized GPUs are excluded from the candidate pool
+- Last release timestamps are preserved for the LRU fallback
 
 ### Race Condition Protection
 Validation is integrated into the atomic allocation process:

@@ -21,9 +21,9 @@ The `foreign` case covers somebody starting a job on a GPU you reserved, or a jo
 
 ```text
 ❯ canhazgpu status
- GPU │ STATUS    │ USER  │ DURATION │ TYPE   │ DETAILS                                        │ VALIDATION
-─────┼───────────┼───────┼──────────┼────────┼────────────────────────────────────────────────┼─────────────────────
- 0   │ ⚠ FOREIGN │ alice │ 1h 0m 0s │ MANUAL │ expires in 59m, idle 10m, used by bob (8452MB)  │ 8452MB, 1 processes
+ GPU │ STATUS    │ USER  │ DURATION │ TYPE   │ DETAILS                                                    │ MEMORY               │ NOTE │ UTIL
+─────┼───────────┼───────┼──────────┼────────┼────────────────────────────────────────────────────────────┼──────────────────────┼──────┼──────
+ 0   │ ⚠ FOREIGN │ alice │ 1h 0m    │ MANUAL │ expires in 59m, idle 10m, used by bob, processes: PID 123 (5m)│ 8452MB, 1 processes  │ -    │ 0%
 ```
 
 The USER column still names who holds the reservation; DETAILS names who is actually on the GPU. In `--json` output the status stays `IN_USE` for compatibility, with the detail in `foreign_users`, `foreign_processes` and `foreign_memory_mb`.
@@ -100,6 +100,9 @@ Safety rails:
 | `--min-memory` | 0 (off) | Ignore small allocations if your site has noisy tooling |
 | memory threshold | 100 MB | A GPU below `--memory-threshold` is not considered in use at all |
 | allow lists | `root`, display/monitoring tools | System daemons legitimately touch GPUs |
+
+!!! warning "root is excluded by default"
+    `--exclude-users` defaults to `root`, so guard ignores **all** root processes — including a root job running on somebody else's reserved GPU. `status` will still show `⚠ FOREIGN`. To make guard react to root users as well, start it with `--exclude-users ''` (or configure `guard.exclude-users: []`); display/monitoring tools remain covered by `--exclude-commands`.
 
 ## Housekeeping
 

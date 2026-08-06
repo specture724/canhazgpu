@@ -35,14 +35,14 @@ The system queries your recent usage history (last 100 records) to determine whi
 ### Example Scenario - Alice's Workflow
 Alice has been working with GPUs 1 and 2 recently:
 
-```bash
+```text
 ❯ canhazgpu status
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-0   available          free for 5h 30m
-1   available          free for 30m                                                     # Alice used recently
-2   available          free for 45m                                                     # Alice used before GPU 1
-3   available          free for 2h 15m
+ GPU │ STATUS      │ USER │ DURATION │ TYPE │ DETAILS          │ MEMORY    │ NOTE │ UTIL
+─────┼─────────────┼──────┼──────────┼──────┼──────────────────┼───────────┼──────┼──────
+ 0   │ ● AVAILABLE │ -    │ -        │ -    │ free for 5h 30m  │ 4MB used  │ -    │ 0%
+ 1   │ ● AVAILABLE │ -    │ -        │ -    │ free for 30m     │ 4MB used  │ -    │ 0%   # Alice used recently
+ 2   │ ● AVAILABLE │ -    │ -        │ -    │ free for 45m     │ 4MB used  │ -    │ 0%   # Alice used before GPU 1
+ 3   │ ● AVAILABLE │ -    │ -        │ -    │ free for 2h 15m  │ 4MB used  │ -    │ 0%
 ```
 
 **Alice's Usage History**:
@@ -59,14 +59,14 @@ GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS             
 ### Example Scenario - Bob's First Request
 Bob is a new user with no usage history:
 
-```bash
+```text
 ❯ canhazgpu status
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-0   available          free for 6h
-1   available          free for 30m
-2   available          free for 45m
-3   available          free for 2h 15m
+ GPU │ STATUS      │ USER │ DURATION │ TYPE │ DETAILS          │ MEMORY    │ NOTE │ UTIL
+─────┼─────────────┼──────┼──────────┼──────┼──────────────────┼───────────┼──────┼──────
+ 0   │ ● AVAILABLE │ -    │ -        │ -    │ free for 6h      │ 4MB used  │ -    │ 0%
+ 1   │ ● AVAILABLE │ -    │ -        │ -    │ free for 30m     │ 4MB used  │ -    │ 0%
+ 2   │ ● AVAILABLE │ -    │ -        │ -    │ free for 45m     │ 4MB used  │ -    │ 0%
+ 3   │ ● AVAILABLE │ -    │ -        │ -    │ free for 2h 15m  │ 4MB used  │ -    │ 0%
 ```
 
 **Bob's Usage History**: None
@@ -154,14 +154,14 @@ The system respects reservation order - first request wins.
 
 Unreserved GPUs are excluded from ALL allocation strategies:
 
-```bash
+```text
 ❯ canhazgpu status
-GPU STATUS      USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- ----------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-0   available            free for 2h
-1   UNRESERVED  bob                                           1024MB used by 1 process
-2   available            free for 1h
-3   available            free for 3h
+ GPU │ STATUS       │ USER │ DETAILS                              │ MEMORY               │ NOTE │ UTIL
+─────┼──────────────┼──────┼──────────────────────────────────────┼──────────────────────┼──────┼──────
+ 0   │ ● AVAILABLE  │ -    │ free for 2h                          │ 4MB used             │ -    │ 0%
+ 1   │ ⚠ UNRESERVED│ bob  │ used by PID 12345 (python3, 2h3m)     │ 1024MB, 1 processes  │ -    │ 0%
+ 2   │ ● AVAILABLE  │ -    │ free for 1h                          │ 4MB used             │ -    │ 0%
+ 3   │ ● AVAILABLE  │ -    │ free for 3h                          │ 4MB used             │ -    │ 0%
 ```
 
 **Alice's history**: GPUs 1, 2, 3 (in that order)

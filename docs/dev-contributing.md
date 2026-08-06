@@ -15,7 +15,7 @@ cd canhazgpu
 **Install dependencies:**
 ```bash
 # System requirements
-# - Go 1.23+
+# - Go 1.25+
 # - Redis server
 # - NVIDIA drivers with nvidia-smi
 

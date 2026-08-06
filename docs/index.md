@@ -48,14 +48,15 @@ canhazgpu web --port 8080
 
 ## Status Display
 
-```bash
+```text
 ❯ canhazgpu status
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-0   available          free for 30m                                                   45MB used
-1   in use    alice    15m 30s     run     llama-2-7b-chat  heartbeat 5s ago          8452MB, 1 processes
-2   in use    bob                                           WITHOUT RESERVATION        1024MB used by PID 12345 (python3), PID 67890 (jupyter)
-3   in use    charlie  1h 2m 15s   manual                   expires in 3h 15m 45s     no usage detected
+ GPU │ STATUS      │ USER    │ DURATION │ TYPE   │ DETAILS                                        │ MEMORY               │ MODEL                   │ NOTE │ UTIL
+─────┼─────────────┼─────────┼──────────┼────────┼────────────────────────────────────────────────┼──────────────────────┼─────────────────────────┼──────┼──────
+ 0   │ ● AVAILABLE │ -       │ -        │ -      │ free for 0h 30m 15s                            │ 45MB used            │ -                       │ -    │ 0%
+ 1   │ ● IN_USE    │ alice   │ 0h 15m   │ RUN    │ heartbeat 5s ago, processes: PID 12345 (2h3m)  │ 8452MB, 1 processes  │ llama-2-7b-chat         │ -    │ 87%
+ 2   │ ⚠ UNRESERVED│ bob     │ -        │ -      │ used by PID 12345 (python3, 2h3m)              │ 1024MB, 1 processes  │ -                       │ -    │ 42%
+ 3   │ ● IN_USE    │ charlie │ 1h 2m    │ MANUAL │ expires in 3h 15m, idle 10m                     │ no usage detected    │ -                       │ -    │ 5%
+ 4   │ ⚠ FOREIGN   │ alice   │ 1h 0m    │ MANUAL │ used by bob, processes: PID 23456 (5m)         │ 8452MB, 1 processes  │ -                       │ -    │ 3%
 ```
 
 ## Getting Started

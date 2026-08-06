@@ -2,7 +2,7 @@
 
 ## Requirements
 
-- **Go 1.23+** (for building from source)
+- **Go 1.25+** (for building from source)
 - **Redis server** running on localhost:6379
 - **GPUs** with appropriate management tools:
   - **NVIDIA GPUs**: nvidia-smi available

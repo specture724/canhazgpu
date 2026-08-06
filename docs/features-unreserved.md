@@ -5,7 +5,7 @@ One of canhazgpu's key features is detecting and handling GPUs that are being us
 ## What is Unreserved Usage?
 
 Unreserved usage occurs when:
-- A GPU has active processes consuming >1GB of memory
+- A GPU has active processes consuming more than the memory threshold (default 100 MB)
 - No proper reservation exists for that GPU in the system
 - The GPU usage was not coordinated through canhazgpu
 
@@ -31,7 +31,7 @@ canhazgpu detects unreserved usage through:
 
 1. **nvidia-smi Integration**: Queries actual GPU processes and memory usage
 2. **Process Ownership Detection**: Identifies which users are running processes
-3. **Memory Threshold**: Considers GPUs with >1GB usage as "in use"
+3. **Memory Threshold**: Considers GPUs above the threshold (default 100 MB) as "in use"
 4. **Cross-Reference**: Compares actual usage against Redis reservation database
 
 ### Detection Timing
@@ -43,31 +43,29 @@ Unreserved usage detection runs:
 ## Status Display
 
 ### Single Unreserved User
-```bash
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-2   in use    bob                          mistralai/Mistral-7B-Instruct-v0.1           WITHOUT RESERVATION        1024MB used by PID 12345 (python3), PID 67890 (jupyter)
+```text
+ GPU │ STATUS       │ USER │ DETAILS                                                │ MEMORY               │ MODEL
+─────┼──────────────┼──────┼────────────────────────────────────────────────────────┼──────────────────────┼────────────────────────────
+ 2   │ ⚠ UNRESERVED │ bob  │ used by PID 12345 (python3, 2h3m), PID 67890 (jupyter) │ 1024MB, 2 processes  │ mistralai/Mistral-7B-...
 ```
 
 **Information shown:**
+- `STATUS`: `UNRESERVED` marks the GPU as used without a reservation
 - `USER`: The user running unreserved processes (bob)
-- `DETAILS`: Shows "WITHOUT RESERVATION" status
-- `VALIDATION`: Total memory consumption and process details
-- `PID 12345 (python3)`: Process ID and name
-- `PID 67890 (jupyter)`: Additional processes (if any)
+- `DETAILS`: Process IDs, names and how long they have been running
+- `MEMORY`: Total memory consumption and process count
 
 ### Multiple Unreserved Users
-```bash
-GPU STATUS    USER            DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- --------------- ----------- ------- ---------------- -------------------------- ---------------------
-3   in use    alice,bob,charlie                    meta-llama/Meta-Llama-3-8B-Instruct                    WITHOUT RESERVATION        2048MB used by PID 12345 (python3), PID 23456 (pytorch) and 2 more
+```text
+ GPU │ STATUS       │ USER              │ DETAILS                                                       │ MEMORY
+─────┼──────────────┼───────────────────┼──────────────────────────────────────────────────────────────┼─────────────────────
+ 3   │ ⚠ UNRESERVED │ alice,bob,charlie │ used by PID 12345 (python3, 2h3m), PID 23456 (pytorch, 5m)... │ 2048MB, 4 processes
 ```
 
 **Information shown:**
 - `USER`: All users with processes on this GPU (alice,bob,charlie)
-- `DETAILS`: Shows "WITHOUT RESERVATION" status
-- `VALIDATION`: Total memory consumption and process details
-- `and 2 more`: Indicates additional processes (display truncated for readability)
+- `DETAILS`: Process IDs, names and runtimes (truncated for readability)
+- `MEMORY`: Total memory consumption and process count
 
 ### Process Details
 The system attempts to show:
@@ -107,11 +105,11 @@ Error: Not enough GPUs available. Requested: 3, Available: 1 (2 GPUs in use with
    ```
 
 2. **Identify unreserved users and processes**:
-   ```bash
-   GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
-   --- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-   2   in use    bob                          mistralai/Mistral-7B-Instruct-v0.1           WITHOUT RESERVATION        1024MB used by PID 12345 (python3), PID 67890 (jupyter)
-   ```
+```text
+ GPU │ STATUS       │ USER │ DETAILS                                                │ MEMORY               │ MODEL
+─────┼──────────────┼──────┼────────────────────────────────────────────────────────┼──────────────────────┼────────────────────────────
+ 2   │ ⚠ UNRESERVED │ bob  │ used by PID 12345 (python3, 2h3m), PID 67890 (jupyter) │ 1024MB, 2 processes  │ mistralai/Mistral-7B-...
+```
 
 3. **Contact the user** to coordinate proper usage
 
@@ -165,61 +163,50 @@ canhazgpu run --gpus 1 -- python train.py
 ```bash
 #!/bin/bash
 # unreserved_reminder.sh
-STATUS=$(canhazgpu status)
-UNAUTHORIZED=$(echo "$STATUS" | grep "WITHOUT RESERVATION")
-
-if [ -n "$UNAUTHORIZED" ]; then
-    echo "Reminder: Please use canhazgpu for GPU reservations"
-    echo "$UNAUTHORIZED"
-fi
+canhazgpu status --json | jq -r '.[] | select(.status == "UNRESERVED") |
+    "Reminder: GPU \(.gpu_id) is used without a reservation by \(.unreserved_users | join(","))"'
 ```
 
 #### Automated Notification
 ```bash
 #!/bin/bash
 # unreserved_notify.sh
-STATUS=$(canhazgpu status)
-UNAUTHORIZED=$(echo "$STATUS" | grep "WITHOUT RESERVATION")
-
-if [ -n "$UNAUTHORIZED" ]; then
-    # Extract usernames and send notifications
-    USERS=$(echo "$UNAUTHORIZED" | sed -n 's/.*by users\? \([^-]*\) -.*/\1/p')
-    for USER in $USERS; do
-        echo "Please use canhazgpu for GPU reservations" | wall -n "$USER"
+canhazgpu status --json | jq -r '.[] | select(.status == "UNRESERVED") | .unreserved_users[]' | \
+    sort -u | while read -r user; do
+        echo "Please use canhazgpu for GPU reservations" | wall -n "$user"
     done
-fi
 ```
 
 ## Advanced Detection Scenarios
 
 ### Multi-GPU Unreserved Usage
-```bash
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-1   in use    alice                        NousResearch/Nous-Hermes-2-Yi-34B                         WITHOUT RESERVATION        2048MB used by PID 11111 (python3)
-2   in use    alice                        NousResearch/Nous-Hermes-2-Yi-34B                         WITHOUT RESERVATION        2048MB used by PID 11111 (python3)
-5   in use    alice                        NousResearch/Nous-Hermes-2-Yi-34B                         WITHOUT RESERVATION        2048MB used by PID 11111 (python3)
+```text
+ GPU │ STATUS       │ USER  │ DETAILS                                │ MEMORY               │ MODEL
+─────┼──────────────┼───────┼────────────────────────────────────────┼──────────────────────┼─────────────────────────────
+ 1   │ ⚠ UNRESERVED │ alice │ used by PID 11111 (python3, 2h3m)      │ 2048MB, 1 processes  │ NousResearch/Nous-Hermes...
+ 2   │ ⚠ UNRESERVED │ alice │ used by PID 11111 (python3, 2h3m)      │ 2048MB, 1 processes  │ NousResearch/Nous-Hermes...
+ 5   │ ⚠ UNRESERVED │ alice │ used by PID 11111 (python3, 2h3m)      │ 2048MB, 1 processes  │ NousResearch/Nous-Hermes...
 ```
 
 Same process using multiple GPUs - user should reserve all needed GPUs properly.
 
 ### Mixed Usage Patterns
-```bash
-GPU STATUS    USER     DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- -------- ----------- ------- ---------------- -------------------------- ---------------------
-0   in use    bob      1h 30m 0s   run     microsoft/DialoGPT-large heartbeat 5s ago          8452MB, 1 processes
-1   in use    alice                        teknium/OpenHermes-2.5-Mistral-7B                         WITHOUT RESERVATION        1024MB used by PID 22222 (jupyter)
-2   available          free for 2h                                                    45MB used
-3   in use    charlie  45m 0s      manual                   expires in 7h 15m 0s      no usage detected
+```text
+ GPU │ STATUS       │ USER    │ DURATION │ TYPE   │ DETAILS                                        │ MEMORY               │ MODEL
+─────┼──────────────┼─────────┼──────────┼────────┼────────────────────────────────────────────────┼──────────────────────┼────────────────────────────
+ 0   │ ● IN_USE     │ bob     │ 1h 30m   │ RUN    │ heartbeat 5s ago                                │ 8452MB, 1 processes  │ microsoft/DialoGPT-large
+ 1   │ ⚠ UNRESERVED │ alice   │ -        │ -      │ used by PID 22222 (jupyter, 1h5m)              │ 1024MB, 1 processes  │ teknium/OpenHermes-2.5...
+ 2   │ ● AVAILABLE  │ -       │ -        │ -      │ free for 2h                                    │ 45MB used            │ -
+ 3   │ ● IN_USE     │ charlie │ 45m     │ MANUAL │ expires in 7h 15m                               │ no usage detected    │ -
 ```
 
 Mix of proper usage, unreserved usage, and available GPUs.
 
 ### Container-Based Unreserved Usage
-```bash
-GPU STATUS    USER        DURATION    TYPE    MODEL            DETAILS                    VALIDATION
---- --------- ----------- ----------- ------- ---------------- -------------------------- ---------------------
-1   in use    root,alice                      codellama/CodeLlama-7b-Instruct-hf                      WITHOUT RESERVATION        3072MB used by PID 33333 (dockerd), PID 44444 (python3) and 1 more
+```text
+ GPU │ STATUS       │ USER      │ DETAILS                                                          │ MEMORY
+─────┼──────────────┼───────────┼──────────────────────────────────────────────────────────────────┼─────────────────────
+ 1   │ ⚠ UNRESERVED │ root,alice│ used by PID 33333 (dockerd, 1h2m), PID 44444 (python3, 30m)...   │ 3072MB, 3 processes
 ```
 
 Docker containers running with GPU access - users should coordinate container GPU usage through canhazgpu.
@@ -230,24 +217,20 @@ Docker containers running with GPU access - users should coordinate container GP
 ```python
 def check_unreserved_usage():
     """Check for unreserved GPU usage and return details"""
-    result = subprocess.run(['canhazgpu', 'status'], 
+    result = subprocess.run(['canhazgpu', 'status', '--json'],
                           capture_output=True, text=True)
-    
-    unreserved = []
-    for line in result.stdout.split('\n'):
-        if 'WITHOUT RESERVATION' in line:
-            # Parse user and memory info
-            match = re.search(r'by users? ([^-]+) - (\d+)MB', line)
-            if match:
-                users = match.group(1).strip()
-                memory = int(match.group(2))
-                unreserved.append({
-                    'users': users,
-                    'memory_mb': memory,
-                    'raw_line': line
-                })
-    
-    return unreserved
+    statuses = json.loads(result.stdout)
+
+    return [
+        {
+            'gpu_id': gpu['gpu_id'],
+            'users': gpu.get('unreserved_users', []),
+            'memory_mb': gpu.get('memory_mb', 0),
+            'process_info': gpu.get('process_info', ''),
+        }
+        for gpu in statuses
+        if gpu['status'] == 'UNRESERVED'
+    ]
 
 # Usage in monitoring
 violations = check_unreserved_usage()
