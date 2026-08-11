@@ -742,6 +742,8 @@ func (ae *AllocationEngine) createQueueEntry(request *QueuedAllocationRequest) *
 		RequestedIDs:    request.GPUIDs,
 		AllocatedGPUs:   []int{},
 		ReservationType: request.ReservationType,
+		Force:           request.Force,
+		ClaimOwned:      request.ClaimOwned,
 		IdleTimeout:     request.IdleTimeout,
 		Note:            request.Note,
 		EnqueueTime:     types.FlexibleTime{Time: now},
@@ -760,7 +762,122 @@ func (ae *AllocationEngine) createQueueEntry(request *QueuedAllocationRequest) *
 	return entry
 }
 
-// waitForGPUs polls for GPU availability and performs greedy allocation
+// isFirstSatisfiableInQueue reports whether this queue entry is the first one
+// in FIFO order whose full request can be satisfied with the GPUs that are free
+// right now. Entries that cannot be fully satisfied are skipped, so they never
+// hold GPUs while waiting for the rest of their request.
+func (ae *AllocationEngine) isFirstSatisfiableInQueue(ctx context.Context, queueID string) (bool, error) {
+	entries, err := ae.client.GetAllQueueEntries(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	usage, err := ae.detectGPUUsage(ctx)
+	if err != nil {
+		return false, err
+	}
+	unreservedGPUs := GetUnreservedGPUs(ctx, usage, ae.config.MemoryThreshold)
+	now := time.Now()
+
+	seenSelf := false
+	for _, entry := range entries {
+		if entry.ID == queueID {
+			seenSelf = true
+		}
+
+		satisfiable, err := ae.queueEntrySatisfiable(ctx, entry, usage, unreservedGPUs, now)
+		if err != nil {
+			return false, err
+		}
+		if satisfiable {
+			return entry.ID == queueID, nil
+		}
+		if seenSelf {
+			// We are not satisfiable and no earlier entry is either; keep waiting
+			return false, nil
+		}
+	}
+
+	return false, nil
+}
+
+// queueEntrySatisfiable reports whether the entry's full request can currently
+// be satisfied with free GPUs, respecting unreserved usage, scheduled bookings
+// and any specific GPU IDs. GPUs already allocated to the entry count toward
+// its request, so partially started (legacy) entries can be completed.
+func (ae *AllocationEngine) queueEntrySatisfiable(ctx context.Context, entry *types.QueueEntry, usage map[int]*types.GPUUsage, unreservedGPUs []int, now time.Time) (bool, error) {
+	needed := entry.GetRequestedGPUCount() - len(entry.AllocatedGPUs)
+	if needed <= 0 {
+		return true, nil
+	}
+
+	unreserved := unreservedGPUs
+	if entry.Force {
+		unreserved = []int{}
+	} else if entry.ClaimOwned {
+		unreserved = FilterOutClaimableOwnedGPUs(unreserved, usage, entry.ActualUser)
+	}
+
+	var expiryTime *time.Time
+	if entry.ReservationType == types.ReservationTypeManual && entry.ExpiryDuration > 0 {
+		expiry := now.Add(entry.ExpiryDuration)
+		expiryTime = &expiry
+	}
+	blockedGPUs, err := ae.BlockedGPUsForWindow(ctx, now, ae.reservationWindowEnd(now, expiryTime))
+	if err != nil {
+		return false, err
+	}
+
+	gpuCount, err := ae.client.GetGPUCount(ctx)
+	if err != nil {
+		return false, err
+	}
+
+	available := 0
+	for gpuID := 0; gpuID < gpuCount; gpuID++ {
+		if containsInt(entry.AllocatedGPUs, gpuID) {
+			continue
+		}
+		if containsInt(unreserved, gpuID) {
+			continue
+		}
+		if _, held := blockedGPUs[gpuID]; held {
+			continue
+		}
+		if len(entry.RequestedIDs) > 0 && !containsInt(entry.RequestedIDs, gpuID) {
+			continue
+		}
+
+		state, err := ae.client.GetGPUState(ctx, gpuID)
+		if err != nil {
+			continue
+		}
+		if state.User != "" {
+			continue
+		}
+
+		available++
+		if available >= needed {
+			return true, nil
+		}
+	}
+
+	return false, nil
+}
+
+// containsInt reports whether values contains target
+func containsInt(values []int, target int) bool {
+	for _, v := range values {
+		if v == target {
+			return true
+		}
+	}
+	return false
+}
+
+// waitForGPUs polls for GPU availability. The first queue entry whose full
+// request can be satisfied is allocated; entries that cannot start yet never
+// hold GPUs while waiting.
 func (ae *AllocationEngine) waitForGPUs(ctx context.Context, queueEntry *types.QueueEntry, request *QueuedAllocationRequest, heartbeat *QueueHeartbeatManager) (*QueuedAllocationResult, error) {
 	ticker := time.NewTicker(types.QueuePollInterval)
 	defer ticker.Stop()
@@ -797,8 +914,9 @@ func (ae *AllocationEngine) waitForGPUs(ctx context.Context, queueEntry *types.Q
 				return nil, fmt.Errorf("wait timeout exceeded")
 			}
 
-			// Check if we're first in queue
-			isFirst, err := ae.client.IsFirstInQueue(ctx, queueEntry.ID)
+			// Check whether we are the first entry whose full request can be
+			// satisfied right now; earlier entries that cannot start are skipped
+			isFirst, err := ae.isFirstSatisfiableInQueue(ctx, queueEntry.ID)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: failed to check queue position: %v\n", err)
 				continue
@@ -814,7 +932,7 @@ func (ae *AllocationEngine) waitForGPUs(ctx context.Context, queueEntry *types.Q
 				continue
 			}
 
-			// We're first in queue - try to allocate
+			// We can be fully satisfied - try to allocate
 			result, err := ae.tryAllocateForQueueEntry(ctx, queueEntry, request)
 			if err != nil {
 				fmt.Fprintf(os.Stderr, "Warning: allocation attempt failed: %v\n", err)
@@ -828,13 +946,6 @@ func (ae *AllocationEngine) waitForGPUs(ctx context.Context, queueEntry *types.Q
 					fmt.Fprintf(os.Stderr, "Warning: failed to remove from queue: %v\n", err)
 				}
 				return result, nil
-			}
-
-			// Still waiting for more GPUs
-			entry, _ := ae.client.GetQueueEntry(ctx, queueEntry.ID)
-			if entry != nil && len(entry.AllocatedGPUs) > len(queueEntry.AllocatedGPUs) {
-				queueEntry = entry
-				fmt.Printf("Partial allocation: %d/%d GPUs\n", len(queueEntry.AllocatedGPUs), queueEntry.GetRequestedGPUCount())
 			}
 		}
 	}
@@ -883,9 +994,9 @@ func (ae *AllocationEngine) tryAllocateForQueueEntry(ctx context.Context, queueE
 	}
 
 	unreservedGPUs := GetUnreservedGPUs(ctx, usage, ae.config.MemoryThreshold)
-	if request.Force {
+	if entry.Force {
 		unreservedGPUs = []int{}
-	} else if request.ClaimOwned {
+	} else if entry.ClaimOwned {
 		unreservedGPUs = FilterOutClaimableOwnedGPUs(unreservedGPUs, usage, entry.ActualUser)
 	}
 
@@ -967,13 +1078,14 @@ func (ae *AllocationEngine) tryAllocateForQueueEntry(ctx context.Context, queueE
 		return nil, nil
 	}
 
-	// Calculate how many more we need
+	// Only allocate when the whole request can be satisfied: a partial
+	// allocation would hold GPUs for a job that cannot start yet
 	needed := entry.GetRequestedGPUCount() - len(entry.AllocatedGPUs)
-	if needed > len(availableGPUs) {
-		needed = len(availableGPUs)
+	if len(availableGPUs) < needed {
+		return nil, nil
 	}
 
-	// Allocate the available GPUs (greedy partial allocation)
+	// Allocate exactly what the request needs
 	now = time.Now()
 	for i := 0; i < needed; i++ {
 		gpuID := availableGPUs[i]

@@ -124,7 +124,7 @@ canhazgpu release --gpu-ids 0,2   # 只释放指定 GPU（对 run 型 reservatio
 注意事项：
 
 - 默认时长只有 30 分钟——请总是显式传 `--duration`。
-- 默认情况下，manual reservation 连续 **15 分钟没有 GPU 使用** 就会被自动释放（`--idle-timeout`，传 `0` 可关闭）。这是防止有人忘记释放而浪费资源。如果你要加载大模型再开始训练，可以放宽：`--idle-timeout 1h`。
+- 默认情况下，manual reservation 连续 **15 分钟没有 GPU 使用** 就会被自动释放（`--idle-timeout`，传 `0` 可关闭，最大 3 小时）。这是防止有人忘记释放而浪费资源。如果你要加载大模型再开始训练，可以放宽：`--idle-timeout 1h`。
 - `release` 不带 `--gpu-ids` 会释放你**所有** manual reservation，脚本里请用 `--gpu-ids` 精确释放。
 
 ## 4. 提前规划：schedule

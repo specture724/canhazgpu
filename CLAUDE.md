@@ -36,7 +36,7 @@ The tool is a Go application structured as a CLI with internal packages that imp
 - **MRU-per-User Allocation**: Most Recently Used per user strategy provides GPU affinity with LRU fallback for fair distribution
 - **Specific GPU Reservation**: Users can reserve exact GPU IDs (e.g., --gpu-ids 1,3) when specific hardware is needed
 - **Race Condition Protection**: Redis-based distributed locking prevents allocation conflicts
-- **Fair Queueing System**: FCFS (First Come First Served) queue with greedy partial allocation for first-in-queue, heartbeat-based stale entry cleanup, and queue status monitoring
+- **Fair Queueing System**: FCFS queue; the first entry whose full request can be satisfied is allocated (no partial allocation, so GPUs are never held by a job that cannot start), with heartbeat-based stale entry cleanup and queue status monitoring
 
 ## Development Commands
 

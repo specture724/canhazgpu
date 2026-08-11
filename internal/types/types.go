@@ -211,6 +211,8 @@ type QueueEntry struct {
 	RequestedIDs    []int         `json:"requested_ids,omitempty"`
 	AllocatedGPUs   []int         `json:"allocated_gpus"`
 	ReservationType string        `json:"reservation_type"`
+	Force           bool          `json:"force,omitempty"`
+	ClaimOwned      bool          `json:"claim_owned,omitempty"`
 	ExpiryDuration  time.Duration `json:"expiry_duration,omitempty"`
 	IdleTimeout     time.Duration `json:"idle_timeout,omitempty"`
 	Note            string        `json:"note,omitempty"`
@@ -402,6 +404,11 @@ const (
 	// DefaultIdleTimeout is how long a manual reservation may sit without any
 	// detected GPU usage before it is released automatically
 	DefaultIdleTimeout = 15 * time.Minute
+
+	// MaxIdleTimeout is the upper bound for a manual reservation's idle
+	// timeout; larger values are rejected so forgotten reservations cannot
+	// hold GPUs indefinitely
+	MaxIdleTimeout = 3 * time.Hour
 
 	// DefaultBookingProtectionWindow is how far ahead reservations without a
 	// fixed end time look for scheduled bookings

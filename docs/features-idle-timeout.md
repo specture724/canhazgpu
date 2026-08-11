@@ -66,7 +66,7 @@ If a host can be quiet for long stretches, run `canhazgpu web` (its dashboard re
 
 | Setting | Default | Where |
 |---------|---------|-------|
-| Idle timeout for new manual reservations | `15m` | `--idle-timeout`, or `reserve.idle-timeout` in the config file |
+| Idle timeout for new manual reservations | `15m` (max `3h`) | `--idle-timeout`, or `reserve.idle-timeout` in the config file |
 | Memory threshold that counts as usage | `100` MB | `--memory-threshold`, or `memory.threshold` |
 
 ```yaml

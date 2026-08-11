@@ -301,6 +301,9 @@ func parseIdleTimeout(value string) (time.Duration, error) {
 	if idleTimeout < 0 {
 		return 0, fmt.Errorf("idle timeout cannot be negative")
 	}
+	if idleTimeout > types.MaxIdleTimeout {
+		return 0, fmt.Errorf("idle timeout cannot exceed %s", utils.FormatDurationShort(types.MaxIdleTimeout))
+	}
 
 	return idleTimeout, nil
 }

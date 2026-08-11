@@ -69,7 +69,7 @@ canhazgpu reserve --gpu-ids 6 --claim --duration 2h
 ```
 
 - 预约时长要显式写，默认只有 30 分钟
-- 连续 15 分钟没有使用会自动释放，防止忘记
+- 连续 15 分钟没有使用会自动释放，防止忘记（`--idle-timeout` 可调，上限 3 小时）
 - `release` 不带参数会释放你的全部 manual 预约，脚本里建议用 `--gpu-ids`
 
 ## 4. 预约未来时段

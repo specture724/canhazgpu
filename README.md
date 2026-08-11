@@ -152,7 +152,7 @@ canhazgpu admin --gpus $(amd-smi list --json | jq 'length')  # For AMD
 
 1. **Validation**: Uses nvidia-smi or amd-smi to detect actual GPU usage and identify conflicts
 2. **Coordination**: Uses Redis for distributed state management and race condition prevention
-3. **Queueing**: FCFS (First Come First Served) queue with greedy partial allocation for the first waiter
+3. **Queueing**: FCFS queue; the first entry whose full request can be satisfied is allocated, so no GPUs are held by a job that cannot start yet
 4. **Allocation**: MRU-per-user (Most Recently Used per user) strategy provides GPU affinity with LRU fallback for fair distribution
 5. **Monitoring**: Heartbeat system tracks active reservations and handles cleanup
 6. **Enforcement**: Automatically excludes unreserved GPU usage from allocation

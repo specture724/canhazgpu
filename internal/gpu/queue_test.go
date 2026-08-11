@@ -362,6 +362,102 @@ func TestQueueEntry_PartialAllocation(t *testing.T) {
 	assert.Equal(t, []int{0, 1, 2, 3}, retrieved.AllocatedGPUs)
 }
 
+func TestQueueAllocatesFirstFullySatisfiableEntry(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	client := setupQueueTestRedis(t)
+	ctx := context.Background()
+
+	require.NoError(t, client.SetGPUCount(ctx, 4))
+	require.NoError(t, client.SetAvailableProvider(ctx, "fake"))
+
+	config := &types.Config{
+		RedisHost:       "localhost",
+		RedisPort:       6379,
+		RedisDB:         15,
+		MemoryThreshold: 100,
+	}
+	engine := NewAllocationEngine(client, config)
+
+	// GPUs 2 and 3 are busy with other users' reservations
+	for _, gpuID := range []int{2, 3} {
+		require.NoError(t, client.SetGPUState(ctx, gpuID, &types.GPUState{
+			User:          "other",
+			ActualUser:    "other",
+			StartTime:     types.FlexibleTime{Time: time.Now()},
+			Type:          types.ReservationTypeRun,
+			LastHeartbeat: types.FlexibleTime{Time: time.Now()},
+		}))
+	}
+
+	// Entry A is first but needs 4 GPUs; Entry B is second and needs 2
+	entryA := &types.QueueEntry{
+		ID:              "entry-a",
+		User:            "alice",
+		ActualUser:      "alice",
+		RequestedCount:  4,
+		AllocatedGPUs:   []int{},
+		ReservationType: types.ReservationTypeRun,
+		EnqueueTime:     types.FlexibleTime{Time: time.Now()},
+		LastHeartbeat:   types.FlexibleTime{Time: time.Now()},
+	}
+	entryB := &types.QueueEntry{
+		ID:              "entry-b",
+		User:            "bob",
+		ActualUser:      "bob",
+		RequestedCount:  2,
+		AllocatedGPUs:   []int{},
+		ReservationType: types.ReservationTypeRun,
+		EnqueueTime:     types.FlexibleTime{Time: time.Now().Add(time.Second)},
+		LastHeartbeat:   types.FlexibleTime{Time: time.Now()},
+	}
+	require.NoError(t, client.AddToQueue(ctx, entryA))
+	require.NoError(t, client.AddToQueue(ctx, entryB))
+
+	// B is second in line but the first entry whose full request fits
+	ok, err := engine.isFirstSatisfiableInQueue(ctx, entryB.ID)
+	require.NoError(t, err)
+	assert.True(t, ok, "entry B should be the first satisfiable entry")
+
+	ok, err = engine.isFirstSatisfiableInQueue(ctx, entryA.ID)
+	require.NoError(t, err)
+	assert.False(t, ok, "entry A cannot be satisfied and must keep waiting")
+
+	// A full allocation attempt for A must not grab the two free GPUs
+	requestA := &QueuedAllocationRequest{
+		AllocationRequest: &types.AllocationRequest{
+			GPUCount:        4,
+			User:            "alice",
+			ActualUser:      "alice",
+			ReservationType: types.ReservationTypeRun,
+		},
+	}
+	result, err := engine.tryAllocateForQueueEntry(ctx, entryA, requestA)
+	require.NoError(t, err)
+	assert.Nil(t, result, "entry A must not receive a partial allocation")
+	for _, gpuID := range []int{0, 1} {
+		state, err := client.GetGPUState(ctx, gpuID)
+		require.NoError(t, err)
+		assert.Empty(t, state.User, "GPU %d must stay free", gpuID)
+	}
+
+	// B gets both free GPUs in one shot
+	requestB := &QueuedAllocationRequest{
+		AllocationRequest: &types.AllocationRequest{
+			GPUCount:        2,
+			User:            "bob",
+			ActualUser:      "bob",
+			ReservationType: types.ReservationTypeRun,
+		},
+	}
+	result, err = engine.tryAllocateForQueueEntry(ctx, entryB, requestB)
+	require.NoError(t, err)
+	require.NotNil(t, result, "entry B should be fully allocated")
+	assert.ElementsMatch(t, []int{0, 1}, result.AllocatedGPUs)
+}
+
 func TestQueueStatus(t *testing.T) {
 	if testing.Short() {
 		t.Skip("Skipping integration test in short mode")

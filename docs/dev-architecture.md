@@ -163,7 +163,7 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 - Atomic GPU allocation to prevent race conditions
 - MRU-per-user (Most Recently Used per user) allocation strategy with LRU fallback
 - Integration with validation layer for unreserved usage exclusion
-- Rollback on partial allocation failures
+- Rollback on allocation failures
 
 ## Data Flow
 
@@ -318,7 +318,7 @@ Reservations created by a scheduled booking also carry `booking_id`; queue parti
 Multiple users requesting GPUs simultaneously could cause:
 - Double allocation of same GPU
 - Inconsistent state updates
-- Partial allocations
+- Full-request queue allocation
 
 **Solution:**
 ```go

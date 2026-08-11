@@ -2,11 +2,41 @@ package cli
 
 import (
 	"testing"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestParseIdleTimeout(t *testing.T) {
+	tests := []struct {
+		name    string
+		value   string
+		want    time.Duration
+		wantErr bool
+	}{
+		{name: "empty disables", value: "", want: 0},
+		{name: "zero disables", value: "0", want: 0},
+		{name: "30 minutes", value: "30m", want: 30 * time.Minute},
+		{name: "exactly at cap", value: "3h", want: 3 * time.Hour},
+		{name: "over cap rejected", value: "3h1m", wantErr: true},
+		{name: "negative rejected", value: "-5m", wantErr: true},
+		{name: "bad format rejected", value: "abc", wantErr: true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := parseIdleTimeout(tt.value)
+			if tt.wantErr {
+				assert.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
 
 // Test the basic structure and flags of all commands
 func TestCommands_Structure(t *testing.T) {

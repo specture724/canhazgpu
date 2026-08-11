@@ -345,7 +345,7 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>] [--nonb
 - `--nonblock`: Fail immediately if GPUs are unavailable instead of waiting in queue
 - `--wait`: Maximum time to wait for GPUs (e.g., 30m, 2h). Default: wait forever.
 - `--short`: Output only GPU IDs (for use with command substitution)
-- `--idle-timeout`: Release the reservation if no GPU usage is detected for this long (default: 15m, `0` disables)
+- `--idle-timeout`: Release the reservation if no GPU usage is detected for this long (default: 15m, `0` disables, maximum 3h)
 - `--claim`: Reserve a GPU that only your own unreserved process is using; if anyone else is on it, wait in the queue
 - `--start`: Book the GPUs for a future window starting then, instead of reserving now
 - `--end`: End of the window (defaults to `--duration` after the start)
@@ -506,15 +506,15 @@ GPU Reservation Queue
 
 Position  User            Requested       Allocated    Waiting
 --------  ----            ---------       ---------    -------
-1         alice           4 GPUs          2/4          5m 30s
+1         alice           4 GPUs          0/4          5m 30s
 2         bob             2 GPUs          0/2          2m 15s
 
-Total: 2 entries waiting for 4 GPUs (2 partially allocated)
+Total: 2 entries waiting for 6 GPUs (0 partially allocated)
 ```
 
 **Queue Behavior:**
 - **FCFS (First Come First Served)**: Only the first entry in the queue can acquire newly available GPUs
-- **Greedy Partial Allocation**: GPUs are allocated to the first entry as they become available
+- **Full-Request Allocation**: the first entry whose complete request can be satisfied is allocated; entries that cannot start yet never hold GPUs while waiting
 - **Heartbeat Cleanup**: Stale queue entries (crashed processes) are automatically cleaned up after 2 minutes
 - **Ctrl+C Handling**: Pressing Ctrl+C while waiting removes the entry from the queue
 
