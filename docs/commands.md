@@ -270,7 +270,7 @@ canhazgpu run [--gpus <count> | --gpu-ids <ids>] [--timeout <duration>] [--nonbl
     If specific GPU IDs are requested and any are not available, the command will wait in the queue until those specific IDs become available.
 
 !!! tip "Queueing Behavior"
-    By default, if GPUs are not immediately available, `run` will wait in a FCFS (First Come First Served) queue until resources become available. Use `--nonblock` to fail immediately instead, or `--wait` to set a maximum wait time.
+    By default, if GPUs are not immediately available, `run` will wait in a FCFS (First Come First Served) queue until resources become available. Use `--nonblock` to fail immediately instead, or `--wait` to set a maximum wait time. When a queued request is allocated, the terminal is notified (OSC 777 / OSC 9 / bell); immediate allocations skip this.
 
 **Timeout formats:**
 - `30s` (30 seconds)
@@ -364,7 +364,7 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>] [--nonb
     If specific GPU IDs are requested and any are not available, the command will wait in the queue until those specific IDs become available.
 
 !!! tip "Queueing Behavior"
-    By default, if GPUs are not immediately available, `reserve` will wait in a FCFS (First Come First Served) queue until resources become available. Use `--nonblock` to fail immediately instead, or `--wait` to set a maximum wait time.
+    By default, if GPUs are not immediately available, `reserve` will wait in a FCFS (First Come First Served) queue until resources become available. Use `--nonblock` to fail immediately instead, or `--wait` to set a maximum wait time. When a queued request is allocated, the terminal is notified (OSC 777 / OSC 9 / bell); immediate allocations skip this.
 
 **Duration Formats:**
 - `30m`: 30 minutes
@@ -529,6 +529,7 @@ Reservations made before task IDs existed show `-` as their ID; `release` still 
 - **Full-Request Allocation**: the first entry whose complete request can be satisfied is allocated; entries that cannot start yet never hold GPUs while waiting
 - **Heartbeat Cleanup**: Stale queue entries (crashed processes) are automatically cleaned up after 2 minutes
 - **Ctrl+C Handling**: Pressing Ctrl+C while waiting removes the entry from the queue
+- **Allocation notification**: When a request that waited in the queue is finally allocated, canhazgpu pings the terminal so you notice even if the tab is in the background. Immediate allocations (no queue wait) do not notify. Detection is naive from environment variables: OSC 777 (WezTerm, Ghostty, Kitty, Warp, Windows Terminal, rxvt, foot, …) when available, else OSC 9 (iTerm2, VS Code / Cursor, …), else a terminal bell (`BEL`)
 
 **JSON Output:**
 ```bash

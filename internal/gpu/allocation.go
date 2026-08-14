@@ -743,6 +743,10 @@ func (ae *AllocationEngine) AllocateGPUsWithQueue(ctx context.Context, request *
 	}
 
 	queueHeartbeat.Stop()
+	// Only notify after actually waiting in the queue (immediate allocations
+	// return earlier above). Prefer OSC 777 / OSC 9 when the terminal looks
+	// capable; otherwise ring the terminal bell.
+	utils.NotifyTerminalAttention("canhazgpu", fmt.Sprintf("Allocated %d GPU(s)", len(result.AllocatedGPUs)))
 	return result, nil
 }
 
