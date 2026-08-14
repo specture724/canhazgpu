@@ -65,3 +65,31 @@ func TestFormatNowCell(t *testing.T) {
 		})
 	}
 }
+
+// A run reservation that started partway through the current slot has a window
+// of just a few minutes. It still has to show up in that slot's cell.
+func TestScheduleCellShowsPartialSlot(t *testing.T) {
+	SetNoColor(true)
+	t.Cleanup(func() { SetNoColor(false) })
+
+	slot := time.Date(2026, 8, 14, 10, 0, 0, 0, time.Local)
+	slotEnd := slot.Add(30 * time.Minute)
+
+	// Started at 10:24, running until the end of the slot
+	live := &scheduleEntry{
+		user: "bob", gpuIDs: []int{0}, symbol: "a", kind: "run", openEnded: true,
+		start: slot.Add(24 * time.Minute), end: slotEnd,
+	}
+	assert.Equal(t, "a", scheduleCell([]*scheduleEntry{live}, 0, slot, "alice"))
+	assert.Equal(t, "·", scheduleCell([]*scheduleEntry{live}, 1, slot, "alice"), "other GPUs stay free")
+	assert.Equal(t, "·", scheduleCell([]*scheduleEntry{live}, 0, slotEnd, "alice"), "and so does the next slot")
+
+	// An aligned booking still fills exactly its own slots
+	booking := &scheduleEntry{
+		user: "bob", gpuIDs: []int{0}, symbol: "b", kind: "booking",
+		start: slot, end: slotEnd,
+	}
+	assert.Equal(t, "b", scheduleCell([]*scheduleEntry{booking}, 0, slot, "alice"))
+	assert.Equal(t, "·", scheduleCell([]*scheduleEntry{booking}, 0, slotEnd, "alice"),
+		"a booking must not bleed into the slot where it ends")
+}

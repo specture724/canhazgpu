@@ -44,6 +44,13 @@ canhazgpu run --gpus 1 --note "finetune-bert" -- python train.py
 
 GPU 忙的时候 `run` 会自动排队，排队情况用 `canhazgpu queue` 查看。
 
+`queue` 会同时列出排队中和正在占卡的任务，每个任务都有一个 ID，用 `cancel` 取消（类似 slurm 的 `scancel`）：
+
+```bash
+canhazgpu queue            # 看 ID
+canhazgpu cancel 45b590f7  # 排队中的直接出队；跑着的会被 SIGTERM，卡自动释放
+```
+
 ## 3. 交互式使用（notebook、调试、多步实验）
 
 ```bash

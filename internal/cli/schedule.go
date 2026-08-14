@@ -182,10 +182,12 @@ type scheduleEntry struct {
 	symbol    string
 }
 
-// covers reports whether this entry occupies the given GPU at a point in time,
-// treating the window as [start, end)
-func (e *scheduleEntry) covers(gpuID int, at time.Time) bool {
-	if at.Before(e.start) || !at.Before(e.end) {
+// covers reports whether this entry occupies the given GPU during the slot
+// [slotStart, slotEnd). Any overlap counts: reservations begin at arbitrary
+// times, so asking whether a single point inside the slot is covered would hide
+// a job that started partway through it.
+func (e *scheduleEntry) covers(gpuID int, slotStart, slotEnd time.Time) bool {
+	if !e.start.Before(slotEnd) || !e.end.After(slotStart) {
 		return false
 	}
 	for _, id := range e.gpuIDs {
@@ -448,13 +450,11 @@ func printScheduleDay(dayStart time.Time, gpuCount int, bookings []*types.Bookin
 
 // scheduleCell renders one 30 minute slot of one GPU
 func scheduleCell(entries []*scheduleEntry, gpuID int, slotStart time.Time, currentUser string) string {
-	// The middle of the slot decides what it shows, so a booking from 14:00 to
-	// 16:00 fills exactly four cells
-	at := slotStart.Add(types.BookingSlotDuration / 2)
+	slotEnd := slotStart.Add(types.BookingSlotDuration)
 
 	var covering []*scheduleEntry
 	for _, entry := range entries {
-		if entry.covers(gpuID, at) {
+		if entry.covers(gpuID, slotStart, slotEnd) {
 			covering = append(covering, entry)
 		}
 	}

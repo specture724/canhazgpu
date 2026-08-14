@@ -4,12 +4,47 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"os/user"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// ProcessIsZombie reports whether the process is in zombie state (Z). Zombies
+// still answer signal 0 but will never run again, so resource-liveness checks
+// must treat them as finished.
+func ProcessIsZombie(pid int) bool {
+	state, err := processState(pid)
+	return err == nil && state == 'Z'
+}
+
+// processState returns the first state character of a process, from
+// /proc/<pid>/stat with ps -o stat as a fallback.
+func processState(pid int) (byte, error) {
+	if stat, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid)); err == nil {
+		rest := string(stat)
+		if idx := strings.LastIndexByte(rest, ')'); idx >= 0 {
+			rest = rest[idx+1:]
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 || fields[0] == "" {
+			return 0, fmt.Errorf("unexpected /proc stat format")
+		}
+		return fields[0][0], nil
+	}
+
+	out, err := exec.Command("ps", "-o", "stat=", "-p", strconv.Itoa(pid)).Output()
+	if err != nil {
+		return 0, err
+	}
+	state := strings.TrimSpace(string(out))
+	if state == "" {
+		return 0, fmt.Errorf("empty process state")
+	}
+	return state[0], nil
+}
 
 // GetUsernameFromUID converts a UID to username
 func GetUsernameFromUID(uid int) (string, error) {

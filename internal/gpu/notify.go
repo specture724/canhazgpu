@@ -80,7 +80,10 @@ func (n *MultiNotifier) Notify(violation *types.Violation, message string) []str
 			continue
 		}
 
-		if os.IsPermission(err) && os.Geteuid() != 0 {
+		// Reaching another user's process is best effort. Root normally can,
+		// but a restricted /proc or a container can deny it too, so report the
+		// limitation once instead of once per process
+		if os.IsPermission(err) {
 			n.reportPrivilegeLimitation(channel)
 			continue
 		}
@@ -124,7 +127,7 @@ func (n *MultiNotifier) NotifyUser(username string, message string) []string {
 			delivered = append(delivered, channel)
 			continue
 		}
-		if os.IsPermission(err) && os.Geteuid() != 0 {
+		if os.IsPermission(err) {
 			n.reportPrivilegeLimitation(channel)
 		}
 	}
@@ -146,9 +149,12 @@ func (n *MultiNotifier) reportPrivilegeLimitation(channel string) {
 		return
 	}
 	n.warnedAboutPrivileges = true
+	hint := "run the guard as root to warn other users directly"
+	if os.Geteuid() == 0 {
+		hint = "even as root the kernel denies access to those processes - the other channels still apply"
+	}
 	fmt.Fprintf(n.Output,
-		"canhazgpu guard: cannot use the %q channel as a normal user - run the guard as root to warn other users directly\n",
-		channel)
+		"canhazgpu guard: permission denied on the %q channel - %s\n", channel, hint)
 }
 
 // writeLog records the warning in the guard's own output and, if configured, in

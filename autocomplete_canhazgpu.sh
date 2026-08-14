@@ -76,7 +76,7 @@ _canhazgpu_complete() {
     # Before '--', provide completion for canhazgpu itself
     case "$prev" in
         canhazgpu|chg)
-            COMPREPLY=( $(compgen -W "admin reserve release run schedule status report queue guard violations web help --help --redis-host --redis-port --redis-db" -- "$cur") )
+            COMPREPLY=( $(compgen -W "admin reserve release run schedule status report queue cancel guard violations web help --help --redis-host --redis-port --redis-db" -- "$cur") )
             ;;
         admin)
             COMPREPLY=( $(compgen -W "--gpus --force --help" -- "$cur") )
@@ -101,6 +101,9 @@ _canhazgpu_complete() {
             ;;
         release)
             COMPREPLY=( $(compgen -W "--gpu-ids -G --help" -- "$cur") )
+            ;;
+        cancel)
+            COMPREPLY=( $(compgen -W "--force --help" -- "$cur") )
             ;;
         run)
             COMPREPLY=( $(compgen -W "--gpus --gpu-ids -g -G --timeout -t --help --" -- "$cur") )
@@ -130,7 +133,7 @@ _canhazgpu_complete() {
             COMPREPLY=( $(compgen -W "1 3 7 14 30 60 90" -- "$cur") )
             ;;
         *)
-            COMPREPLY=( $(compgen -W "admin reserve release run schedule status report queue guard violations web help --help --redis-host --redis-port --redis-db" -- "$cur") )
+            COMPREPLY=( $(compgen -W "admin reserve release run schedule status report queue cancel guard violations web help --help --redis-host --redis-port --redis-db" -- "$cur") )
             ;;
     esac
 }

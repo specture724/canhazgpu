@@ -230,6 +230,8 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 		local note = ARGV[9]
 		local blocked_gpus_json = ARGV[10]
 		local idle_timeout = tonumber(ARGV[11])
+		local task_id = ARGV[12]
+		local pid = tonumber(ARGV[13])
 
 		-- Parse unreserved GPUs
 		local unreserved_gpus = {}
@@ -386,6 +388,14 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 				state.note = note
 			end
 
+			-- Handle used by 'queue' and 'cancel'
+			if task_id and task_id ~= "" then
+				state.task_id = task_id
+			end
+			if pid and pid > 0 then
+				state.pid = pid
+			end
+
 			-- Set GPU state
 			local key = "canhazgpu:gpu:" .. gpu_id
 			redis.call('SET', key, cjson.encode(state))
@@ -432,6 +442,8 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 		request.Note,
 		string(blockedJSON),
 		int64(request.IdleTimeout.Seconds()),
+		request.TaskID,
+		request.PID,
 	).Result()
 
 	if err != nil {
@@ -483,6 +495,8 @@ func (c *Client) atomicReserveSpecificGPUs(ctx context.Context, request *types.A
 		local note = ARGV[9]
 		local blocked_gpus_json = ARGV[10]
 		local idle_timeout = tonumber(ARGV[11])
+		local task_id = ARGV[12]
+		local pid = tonumber(ARGV[13])
 
 		-- Parse requested GPU IDs
 		local requested_gpus = {}
@@ -590,6 +604,14 @@ func (c *Client) atomicReserveSpecificGPUs(ctx context.Context, request *types.A
 				state.note = note
 			end
 
+			-- Handle used by 'queue' and 'cancel'
+			if task_id and task_id ~= "" then
+				state.task_id = task_id
+			end
+			if pid and pid > 0 then
+				state.pid = pid
+			end
+
 			-- Set GPU state
 			local key = "canhazgpu:gpu:" .. gpu_id
 			redis.call('SET', key, cjson.encode(state))
@@ -642,6 +664,8 @@ func (c *Client) atomicReserveSpecificGPUs(ctx context.Context, request *types.A
 		request.Note,
 		string(blockedJSON),
 		int64(request.IdleTimeout.Seconds()),
+		request.TaskID,
+		request.PID,
 	).Result()
 
 	if err != nil {

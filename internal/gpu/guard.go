@@ -586,9 +586,13 @@ func processMemory(process types.GPUProcessInfo, usage *types.GPUUsage) int {
 	return usage.MemoryMB
 }
 
-// isProcessAlive reports whether a PID still exists
+// isProcessAlive reports whether a PID still exists and is not a zombie.
+// Zombies answer signal 0 but are effectively finished.
 func isProcessAlive(pid int) bool {
-	return syscall.Kill(pid, 0) == nil
+	if syscall.Kill(pid, 0) != nil {
+		return false
+	}
+	return !utils.ProcessIsZombie(pid)
 }
 
 // guardOwnerID identifies this guard instance in the singleton lock

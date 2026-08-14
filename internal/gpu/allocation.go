@@ -87,11 +87,27 @@ func (ae *AllocationEngine) queryGPUUsage(ctx context.Context) (map[int]*types.G
 	return pm.DetectAllGPUUsageWithoutChecks(ctx)
 }
 
+// NewTaskID returns a short handle for a reservation, shown by 'queue' and
+// accepted by 'cancel'
+func NewTaskID() string {
+	return uuid.New().String()[:types.TaskShortIDLength]
+}
+
 // AllocateGPUs allocates GPUs using MRU-per-user strategy with race condition protection
 func (ae *AllocationEngine) AllocateGPUs(ctx context.Context, request *types.AllocationRequest) ([]int, error) {
 	// Validate the allocation request first
 	if err := request.Validate(); err != nil {
 		return nil, err
+	}
+
+	// Give the reservation a handle 'queue' can show and 'cancel' can resolve.
+	// Only run-type reservations get a PID: they are held by this process
+	// (which execs the job), while a manual reservation outlives its command.
+	if request.TaskID == "" {
+		request.TaskID = NewTaskID()
+	}
+	if request.ReservationType == types.ReservationTypeRun && request.PID == 0 {
+		request.PID = os.Getpid()
 	}
 
 	// Best effort maintenance so this request sees an up-to-date pool: due
@@ -748,6 +764,8 @@ func (ae *AllocationEngine) createQueueEntry(request *QueuedAllocationRequest) *
 		Note:            request.Note,
 		EnqueueTime:     types.FlexibleTime{Time: now},
 		LastHeartbeat:   types.FlexibleTime{Time: now},
+		// The waiting process cleans up its own entry when signalled
+		PID: os.Getpid(),
 	}
 
 	if request.ExpiryTime != nil {
@@ -1098,10 +1116,13 @@ func (ae *AllocationEngine) tryAllocateForQueueEntry(ctx context.Context, queueE
 			Type:           entry.ReservationType,
 			Note:           entry.Note,
 			PartialQueueID: entry.ID,
+			// Keep the handle the queue showed while waiting
+			TaskID: entry.ShortID(),
 		}
 
 		if entry.ReservationType == types.ReservationTypeRun {
 			gpuState.LastHeartbeat = types.FlexibleTime{Time: now}
+			gpuState.PID = entry.PID
 		} else if entry.ReservationType == types.ReservationTypeManual {
 			if entry.ExpiryDuration > 0 {
 				gpuState.ExpiryTime = types.FlexibleTime{Time: now.Add(entry.ExpiryDuration)}

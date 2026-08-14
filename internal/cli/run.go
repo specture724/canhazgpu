@@ -253,16 +253,7 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 	}
 
 	// Build supervisor command arguments
-	supervisorArgs := []string{
-		executable,
-		"supervisor",
-		"--gpus", gpuListStr,
-		"--user", displayUser,
-		"--pid", strconv.Itoa(os.Getpid()),
-	}
-	if timeoutStr != "" {
-		supervisorArgs = append(supervisorArgs, "--timeout", timeoutStr)
-	}
+	supervisorArgs := buildSupervisorArgs(executable, config, gpuListStr, displayUser, os.Getpid(), timeoutStr)
 
 	// Start supervisor process (detached, will monitor us)
 	supervisorCmd := exec.Command(supervisorArgs[0], supervisorArgs[1:]...)
@@ -312,4 +303,25 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 		_ = supervisorCmd.Process.Kill()
 	}
 	return fmt.Errorf("failed to exec command: %v", err)
+}
+
+// buildSupervisorArgs builds the command line for the supervisor we spawn. The
+// Redis settings are passed explicitly: the supervisor is a fresh process, so
+// without them it would fall back to the default Redis instead of the one this
+// reservation lives in.
+func buildSupervisorArgs(executable string, config *types.Config, gpuList string, user string, pid int, timeout string) []string {
+	args := []string{
+		executable,
+		"supervisor",
+		"--gpus", gpuList,
+		"--user", user,
+		"--pid", strconv.Itoa(pid),
+		"--redis-host", config.RedisHost,
+		"--redis-port", strconv.Itoa(config.RedisPort),
+		"--redis-db", strconv.Itoa(config.RedisDB),
+	}
+	if timeout != "" {
+		args = append(args, "--timeout", timeout)
+	}
+	return args
 }

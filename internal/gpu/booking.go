@@ -339,6 +339,7 @@ func (ae *AllocationEngine) activateBooking(ctx context.Context, booking *types.
 			ExpiryTime:   booking.EndTime,
 			Note:         booking.Note,
 			BookingID:    booking.ID,
+			TaskID:       booking.ShortID(),
 			LastActivity: types.FlexibleTime{Time: now},
 			IdleTimeout:  int64(booking.IdleTimeout.Seconds()),
 		}

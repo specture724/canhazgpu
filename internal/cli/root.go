@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/russellb/canhazgpu/internal/types"
 	"github.com/russellb/canhazgpu/internal/utils"
@@ -81,8 +82,11 @@ func initConfig() {
 		}
 	}
 
-	// Enable reading from environment variables
+	// Enable reading from environment variables. The replacer is what makes
+	// nested keys reachable: without it "memory.threshold" would look for
+	// CANHAZGPU_MEMORY.THRESHOLD, which a shell cannot even export.
 	viper.SetEnvPrefix("CANHAZGPU")
+	viper.SetEnvKeyReplacer(strings.NewReplacer(".", "_", "-", "_"))
 	viper.AutomaticEnv()
 
 	// If a config file is found, read it in

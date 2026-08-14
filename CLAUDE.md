@@ -8,14 +8,15 @@ This is `canhazgpu`, a GPU reservation tool for single host shared development s
 
 ## Architecture
 
-The tool is a Go application structured as a CLI with internal packages that implements eleven main commands:
+The tool is a Go application structured as a CLI with internal packages that implements twelve main commands:
 - `admin`: Initialize and configure the GPU pool with optional --force flag and --provider selection
 - `status`: Show current GPU allocation status with automatic provider-specific validation
 - `run`: Reserve GPU(s) and execute a command with `CUDA_VISIBLE_DEVICES` set (blocks if GPUs unavailable)
 - `reserve`: Manually reserve GPU(s) for a specified duration, or book a future time window with --start (blocks if GPUs unavailable)
 - `release`: Release all manually reserved GPUs for the current user
 - `report`: Generate GPU reservation reports showing historical reservation patterns by user
-- `queue`: Show the GPU reservation queue with wait times and allocation progress
+- `queue`: Show the GPU reservation queue with wait times and allocation progress, plus the tasks currently holding GPUs and their IDs
+- `cancel`: Cancel your queued or running tasks by ID (slurm's scancel equivalent)
 - `schedule`: Show the day's GPU booking schedule as a grid, and cancel bookings
 - `guard`: Long-running daemon that warns (and optionally terminates) processes bypassing the reservation system, and performs periodic maintenance
 - `violations`: Show current and historical GPU usage that bypassed reservations
@@ -117,9 +118,13 @@ sudo ln -s /usr/local/bin/canhazgpu /usr/local/bin/chg
 # Wait up to 30 minutes for GPUs, then fail
 ./build/canhazgpu run --wait 30m --gpus 4 -- python train.py
 
-# Check the reservation queue
+# Check the reservation queue and the tasks holding GPUs (both show task IDs)
 ./build/canhazgpu queue
 ./build/canhazgpu queue --json
+
+# Cancel your own queued or running task by (abbreviated) ID
+./build/canhazgpu cancel 45b590f7
+sudo ./build/canhazgpu cancel 45b590f7 --force   # someone else's task
 
 # Idle timeout: release a manual reservation nobody uses (default 15m, 0 disables)
 ./build/canhazgpu reserve --gpus 1 --duration 8h --idle-timeout 1h
@@ -194,12 +199,15 @@ redis-cli get "canhazgpu:provider"
 │   │   ├── release.go              # release command implementation
 │   │   ├── report.go               # report command implementation
 │   │   ├── queue.go                # queue command implementation
+│   │   ├── cancel.go               # cancel command implementation
 │   │   ├── schedule.go             # schedule command (booking grid, cancellation)
 │   │   ├── guard.go                # guard command (monitoring daemon)
 │   │   └── violations.go           # violations command
 │   ├── gpu/                        # GPU management logic
 │   │   ├── allocation.go           # MRU-per-user allocation, maintenance, idle timeout
 │   │   ├── booking.go              # Scheduled bookings: creation, activation, preemption
+│   │   ├── tasks.go                # Running task grouping and ID resolution
+│   │   ├── cancel.go               # Cancelling queued and running tasks
 │   │   ├── guard.go                # Violation detection, warning escalation, termination
 │   │   ├── notify.go               # Warning delivery channels (process stderr, tty, log, wall)
 │   │   ├── validation.go           # GPU usage validation and process detection
@@ -276,6 +284,19 @@ redis-cli get "canhazgpu:provider"
 - `internal/gpu/notify.go`: warning channels. `process` writes into `/proc/<pid>/fd/2` only when it resolves to a terminal (never a job's log file or `/dev/null`); `tty` writes to `/dev/pts` entries owned by the offender; both need root for other users
 - The guard's maintenance pass is what makes booking activation and idle reclamation timely without anyone running commands
 
+### Run and Supervisor
+
+- `run` reserves GPUs, spawns a detached `canhazgpu supervisor` child and then execs the job, so the reservation's `pid` is the job itself
+- The supervisor is a fresh process with its own config: `buildSupervisorArgs()` in `internal/cli/run.go` passes the resolved Redis host/port/db on its command line, otherwise it would connect to the default instance and immediately lose the reservation it was spawned to hold
+
+### Task IDs and Cancellation
+
+- Every reservation carries a short `task_id` (8 hex chars) generated in `AllocateGPUs`; all GPUs of one job share it, and a queued request keeps the ID it was shown while waiting (`QueueEntry.ShortID()`)
+- Run-type reservations and queue entries also store the `pid` of the process holding them. That process is the one that execs the job, so signalling it stops the job and lets the supervisor release the GPUs
+- `internal/gpu/tasks.go`: `GetRunningTasks()` groups GPU states by task ID for `queue`; `FindTask()`/`FindQueuedTask()` resolve ID prefixes
+- `internal/gpu/cancel.go`: `CancelTask()` signals the owning process (SIGTERM, then SIGKILL after `cancelKillGrace`) and waits `cancelReleaseGrace` for the supervisor to release the GPUs, falling back to releasing them directly when no process is left. Manual reservations have no process and are released directly
+- Reservations created before task IDs existed show `-` in `queue` and cannot be cancelled; `release` still handles them
+
 ### Locking and Concurrency
 
 - Global allocation lock (`AcquireAllocationLock`, `ReleaseAllocationLock`) prevents race conditions
@@ -351,7 +372,9 @@ Reserved state:
   "expiry_time": timestamp,   // Only for manual reservations
   "idle_timeout": seconds,    // Only for manual reservations with idle detection
   "last_activity": timestamp, // Last time real GPU usage was observed
-  "booking_id": "uuid"        // Set when a scheduled booking created this reservation
+  "booking_id": "uuid",       // Set when a scheduled booking created this reservation
+  "task_id": "45b590f7",      // Handle shown by 'queue' and accepted by 'cancel'
+  "pid": 31337                // Process holding a run-type reservation, signalled by 'cancel'
 }
 ```
 

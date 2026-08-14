@@ -175,9 +175,12 @@ func gracefulKill(pid int) {
 	}
 }
 
-// isProcessRunning checks if a process with the given PID is still running
+// isProcessRunning checks if a process with the given PID is still running.
+// A zombie still answers signal 0, but it will never finish or release the GPU,
+// so it is treated as not running.
 func isProcessRunning(pid int) bool {
-	// Sending signal 0 checks if process exists without actually sending a signal
-	err := syscall.Kill(pid, 0)
-	return err == nil
+	if err := syscall.Kill(pid, 0); err != nil {
+		return false
+	}
+	return !utils.ProcessIsZombie(pid)
 }

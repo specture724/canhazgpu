@@ -14,6 +14,8 @@ By default, releases all manually reserved GPUs. You can optionally specify whic
 
 - `-G, --gpu-ids`: Specific GPU IDs to release (comma-separated, e.g., 1,3,5)
 
+`release` frees the reservation but leaves any process running. To stop the job itself, cancel it by ID instead - see [`cancel`](commands.md#cancel).
+
 ## Reservation Types
 
 The release command can release:

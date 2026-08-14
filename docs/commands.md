@@ -487,7 +487,7 @@ Unique users: 3
 
 ## queue
 
-Show the GPU reservation queue.
+Show the GPU reservation queue and the tasks currently holding GPUs.
 
 ```bash
 canhazgpu queue [--json]
@@ -496,7 +496,9 @@ canhazgpu queue [--json]
 **Options:**
 - `--json`: Output queue status as JSON
 
-When GPUs are not immediately available, `run` and `reserve` commands add entries to a queue and wait for resources to become available. This command shows all entries currently waiting in the queue.
+When GPUs are not immediately available, `run` and `reserve` commands add entries to a queue and wait for resources to become available. This command shows all entries currently waiting in the queue, followed by the tasks that hold GPUs right now.
+
+Both lists show an **ID**: the handle [`cancel`](#cancel) takes. All GPUs of one job share a single ID.
 
 **Example Output:**
 ```bash
@@ -504,13 +506,23 @@ When GPUs are not immediately available, `run` and `reserve` commands add entrie
 GPU Reservation Queue
 =====================
 
-Position  User            Requested       Allocated    Waiting
---------  ----            ---------       ---------    -------
-1         alice           4 GPUs          0/4          5m 30s
-2         bob             2 GPUs          0/2          2m 15s
+Pos  ID         User            Requested       Allocated    Waiting
+---  --         ----            ---------       ---------    -------
+1    7899e60d   alice           4 GPUs          0/4          5m 30s
+2    3c1af402   bob             2 GPUs          0/2          2m 15s
 
 Total: 2 entries waiting for 6 GPUs (0 partially allocated)
+
+Running Tasks
+=============
+
+ID         User            GPUs         Type   Running  Note
+--         ----            ----         ----   -------  ----
+45b590f7   carol           1,2          run    2h 5m    training run
+e1b0da92   dave            0            manual 0h 30m   debugging
 ```
+
+Reservations made before task IDs existed show `-` as their ID; `release` still works on them.
 
 **Queue Behavior:**
 - **FCFS (First Come First Served)**: Only the first entry in the queue can acquire newly available GPUs
@@ -536,9 +548,55 @@ Total: 2 entries waiting for 6 GPUs (0 partially allocated)
   ],
   "total_waiting": 1,
   "total_gpus_requested": 4,
-  "total_gpus_allocated": 2
+  "total_gpus_allocated": 2,
+  "running": [
+    {
+      "task_id": "45b590f7",
+      "user": "carol",
+      "type": "run",
+      "gpus": [1, 2],
+      "pid": 31337,
+      "start_time": "2026-08-13T10:15:00Z",
+      "note": "training run"
+    }
+  ]
 }
 ```
+
+## cancel
+
+Cancel your queued or running tasks, by the ID shown in [`queue`](#queue).
+
+```bash
+canhazgpu cancel <task-id>... [--force]
+```
+
+**Options:**
+- `--force`: Cancel a task that belongs to someone else (needs the privileges to signal their process, so normally `sudo`)
+
+IDs may be abbreviated as long as they stay unique.
+
+**What cancelling does:**
+
+| Task | Effect |
+|------|--------|
+| Waiting in the queue | The waiting process is signalled and the queue entry is removed, along with any partial allocation |
+| `run` reservation | SIGTERM to the job, SIGKILL if it has not exited after 10 seconds; its GPUs are released when it goes |
+| `manual` reservation | Released directly - there is no process of its own to stop |
+
+**Examples:**
+```bash
+❯ canhazgpu cancel 45b590f7
+✓ 45b590f7: PID 31337 terminated, GPUs 1,2 released
+
+❯ canhazgpu cancel 7899e60d
+✓ 7899e60d: removed from the queue (signalled PID 28114)
+
+❯ canhazgpu cancel 45b590f7
+✗ 45b590f7: task 45b590f7 belongs to carol (use --force to cancel it anyway)
+```
+
+Cancelling several tasks at once is fine: `canhazgpu cancel 45b590f7 7899e60d`. Each is reported separately and the command exits non-zero if any of them failed.
 
 ## schedule
 

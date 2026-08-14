@@ -65,19 +65,63 @@ func runQueue(ctx context.Context, jsonOutput bool) error {
 		return fmt.Errorf("failed to get queue status: %v", err)
 	}
 
-	if jsonOutput {
-		return printQueueJSON(status)
+	running, err := engine.GetRunningTasks(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get running tasks: %v", err)
 	}
 
-	return printQueueTable(status)
+	if jsonOutput {
+		return printQueueJSON(status, running)
+	}
+
+	if err := printQueueTable(status); err != nil {
+		return err
+	}
+
+	fmt.Println()
+	return printRunningTasks(running)
 }
 
-func printQueueJSON(status *types.QueueStatus) error {
-	data, err := json.MarshalIndent(status, "", "  ")
+func printQueueJSON(status *types.QueueStatus, running []*gpu.RunningTask) error {
+	output := struct {
+		*types.QueueStatus
+		Running []*gpu.RunningTask `json:"running"`
+	}{status, running}
+
+	data, err := json.MarshalIndent(output, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal queue status: %v", err)
 	}
 	fmt.Println(string(data))
+	return nil
+}
+
+func printRunningTasks(tasks []*gpu.RunningTask) error {
+	fmt.Println("Running Tasks")
+	fmt.Println("=============")
+	if len(tasks) == 0 {
+		fmt.Println("No GPUs are currently reserved.")
+		return nil
+	}
+	fmt.Println()
+
+	fmt.Printf("%-10s %-15s %-12s %-6s %-8s %s\n", "ID", "User", "GPUs", "Type", "Running", "Note")
+	fmt.Printf("%-10s %-15s %-12s %-6s %-8s %s\n", "--", "----", "----", "----", "-------", "----")
+
+	for _, task := range tasks {
+		id := task.TaskID
+		if id == "" {
+			id = "-"
+		}
+		fmt.Printf("%-10s %-15s %-12s %-6s %-8s %s\n",
+			id,
+			truncateString(task.User, 15),
+			truncateString(formatGPUList(task.GPUs), 12),
+			task.Type,
+			utils.FormatDuration(task.Duration()),
+			truncateString(task.Note, 30))
+	}
+
 	return nil
 }
 
@@ -94,10 +138,10 @@ func printQueueTable(status *types.QueueStatus) error {
 	fmt.Println()
 
 	// Print header
-	fmt.Printf("%-10s %-15s %-15s %-12s %s\n",
-		"Position", "User", "Requested", "Allocated", "Waiting")
-	fmt.Printf("%-10s %-15s %-15s %-12s %s\n",
-		"--------", "----", "---------", "---------", "-------")
+	fmt.Printf("%-4s %-10s %-15s %-15s %-12s %s\n",
+		"Pos", "ID", "User", "Requested", "Allocated", "Waiting")
+	fmt.Printf("%-4s %-10s %-15s %-15s %-12s %s\n",
+		"---", "--", "----", "---------", "---------", "-------")
 
 	// Print entries
 	now := time.Now()
@@ -109,8 +153,9 @@ func printQueueTable(status *types.QueueStatus) error {
 		}
 		allocated := fmt.Sprintf("%d/%d", len(entry.AllocatedGPUs), entry.GetRequestedGPUCount())
 
-		fmt.Printf("%-10d %-15s %-15s %-12s %s\n",
+		fmt.Printf("%-4d %-10s %-15s %-15s %-12s %s\n",
 			i+1,
+			entry.ShortID(),
 			truncateString(entry.User, 15),
 			truncateString(requested, 15),
 			allocated,
