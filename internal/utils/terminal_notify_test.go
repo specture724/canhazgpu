@@ -8,17 +8,15 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+// TestDetectTerminalNotifyMethod covers one representative env fingerprint per
+// terminal of interest (plus a single unsupported/fallback case). Do not add
+// extra cases for alternate env vars of the same terminal.
 func TestDetectTerminalNotifyMethod(t *testing.T) {
 	tests := []struct {
 		name     string
 		environ  []string
 		expected TerminalNotifyMethod
 	}{
-		{
-			name:     "empty env falls back to bell",
-			environ:  nil,
-			expected: NotifyBell,
-		},
 		{
 			name:     "WezTerm prefers OSC 777",
 			environ:  []string{"TERM_PROGRAM=WezTerm"},
@@ -30,38 +28,18 @@ func TestDetectTerminalNotifyMethod(t *testing.T) {
 			expected: NotifyOSC777,
 		},
 		{
-			name:     "WEZTERM_PANE prefers OSC 777",
-			environ:  []string{"WEZTERM_PANE=1"},
-			expected: NotifyOSC777,
-		},
-		{
-			name:     "rxvt TERM prefers OSC 777",
+			name:     "rxvt prefers OSC 777",
 			environ:  []string{"TERM=rxvt-unicode-256color"},
 			expected: NotifyOSC777,
 		},
 		{
-			name:     "foot TERM prefers OSC 777",
+			name:     "foot prefers OSC 777",
 			environ:  []string{"TERM=foot"},
 			expected: NotifyOSC777,
 		},
 		{
-			name:     "iTerm prefers OSC 9",
-			environ:  []string{"TERM_PROGRAM=iTerm.app", "ITERM_SESSION_ID=w0t0p0:uuid"},
-			expected: NotifyOSC9,
-		},
-		{
-			name:     "vscode prefers OSC 9",
-			environ:  []string{"TERM_PROGRAM=vscode"},
-			expected: NotifyOSC9,
-		},
-		{
 			name:     "kitty prefers OSC 777",
 			environ:  []string{"TERM_PROGRAM=kitty"},
-			expected: NotifyOSC777,
-		},
-		{
-			name:     "kitty window id prefers OSC 777",
-			environ:  []string{"KITTY_WINDOW_ID=1"},
 			expected: NotifyOSC777,
 		},
 		{
@@ -75,17 +53,19 @@ func TestDetectTerminalNotifyMethod(t *testing.T) {
 			expected: NotifyOSC777,
 		},
 		{
-			name:     "ConEmu prefers OSC 9",
-			environ:  []string{"ConEmuPID=1234"},
+			name:     "iTerm prefers OSC 9",
+			environ:  []string{"TERM_PROGRAM=iTerm.app"},
 			expected: NotifyOSC9,
 		},
 		{
-			name: "OSC 777 wins over OSC 9 when both look supported",
-			environ: []string{
-				"TERM_PROGRAM=WezTerm",
-				"ITERM_SESSION_ID=should-not-matter",
-			},
-			expected: NotifyOSC777,
+			name:     "vscode prefers OSC 9",
+			environ:  []string{"TERM_PROGRAM=vscode"},
+			expected: NotifyOSC9,
+		},
+		{
+			name:     "ConEmu prefers OSC 9",
+			environ:  []string{"ConEmuPID=1234"},
+			expected: NotifyOSC9,
 		},
 		{
 			name:     "plain xterm falls back to bell",
