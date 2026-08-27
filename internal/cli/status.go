@@ -644,6 +644,9 @@ func addGPUStatusRow(t table.Writer, status gpu.GPUStatusInfo, includeModel bool
 			} else {
 				details = "active"
 			}
+			if idle := formatIdleStatus(status); idle != "" {
+				details += ", " + idle
+			}
 		case "manual":
 			if !status.ExpiryTime.IsZero() {
 				details = fmt.Sprintf("expires %s", utils.FormatTimeUntil(status.ExpiryTime))
@@ -930,6 +933,12 @@ func displayGPUStatusJSON(statuses []gpu.GPUStatusInfo) error {
 					jsonStatus.LastHeartbeat = &status.LastHeartbeat
 				} else {
 					jsonStatus.Details = "active"
+				}
+				if status.IdleTimeout > 0 {
+					jsonStatus.IdleTimeout = utils.FormatDurationShort(status.IdleTimeout)
+					if status.IdleFor > 0 {
+						jsonStatus.IdleFor = utils.FormatDurationShort(status.IdleFor)
+					}
 				}
 			case "manual":
 				if !status.ExpiryTime.IsZero() {

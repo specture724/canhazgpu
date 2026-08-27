@@ -258,7 +258,8 @@ canhazgpu run [--gpus <count> | --gpu-ids <ids>] [--timeout <duration>] [--nonbl
 **Options:**
 - `--gpus`: Number of GPUs to reserve (default: 1)
 - `--gpu-ids`: Specific GPU IDs to reserve (comma-separated, e.g., 1,3,5)
-- `--timeout`: Maximum time to run command before killing it (default: none)
+- `--timeout`: Maximum time to run command before killing it (optional, `0` disables)
+- `--idle-timeout`: Release the reservation if no GPU usage is detected for this long (default: 30m, `0` disables)
 - `--nonblock`: Fail immediately if GPUs are unavailable instead of waiting in queue
 - `--wait`: Maximum time to wait for GPUs (e.g., 30m, 2h). Default: wait forever.
 

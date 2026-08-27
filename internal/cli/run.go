@@ -66,6 +66,11 @@ followed by a 30-second grace period. If any processes haven't exited after the
 grace period, the entire process group will be force-killed with SIGKILL.
 This is useful for preventing runaway processes from holding GPUs indefinitely.
 
+Reservations are also released automatically when the reserved GPUs show no
+holder usage for the idle timeout (30 minutes by default). This prevents a
+wrapper script that outlived its GPU process from holding GPUs forever.
+Use --idle-timeout 0 to disable idle release (e.g. for interactive sessions).
+
 Example usage:
   canhazgpu run --gpus 1 -- python train.py
   canhazgpu run --gpus 2 -- python -m torch.distributed.launch train.py
@@ -87,6 +92,7 @@ and your command begins.`,
 		gpuCount := viper.GetInt("run.gpus")
 		gpuIDs := viper.GetIntSlice("run.gpu-ids")
 		timeoutStr := viper.GetString("run.timeout")
+		idleTimeoutStr := viper.GetString("run.idle-timeout")
 		note := viper.GetString("run.note")
 		customUser := viper.GetString("run.user")
 		nonblock := viper.GetBool("run.nonblock")
@@ -100,7 +106,7 @@ and your command begins.`,
 			return err
 		}
 
-		err := runRun(cmd.Context(), gpuCount, gpuIDs, timeoutStr, note, customUser, nonblock, waitStr, args)
+		err := runRun(cmd.Context(), gpuCount, gpuIDs, timeoutStr, idleTimeoutStr, note, customUser, nonblock, waitStr, args)
 
 		// Handle exit code errors
 		if exitErr, ok := err.(*ExitCodeError); ok {
@@ -116,6 +122,8 @@ func init() {
 	runCmd.Flags().IntP("gpus", "g", 1, "Number of GPUs to reserve")
 	runCmd.Flags().IntSliceP("gpu-ids", "G", nil, "Specific GPU IDs to reserve (comma-separated, e.g., 1,3,5)")
 	runCmd.Flags().StringP("timeout", "t", "", "Timeout duration for graceful command termination (e.g., 30m, 2h, 1d). Disabled by default.")
+	runCmd.Flags().String("idle-timeout", utils.FormatDurationShort(types.DefaultRunIdleTimeout),
+		"Release the reservation if no GPU usage is detected for this long (0 to disable)")
 	runCmd.Flags().StringP("note", "n", "", "Optional note describing the reservation purpose")
 	runCmd.Flags().StringP("user", "u", "", "Custom user identifier (e.g., your name when using a shared account)")
 	runCmd.Flags().Bool("nonblock", false, "Fail immediately if GPUs are unavailable instead of waiting in queue")
@@ -144,8 +152,13 @@ func validateRunCommand(args []string, dashIndex int) error {
 	return nil
 }
 
-func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, note string, customUser string, nonblock bool, waitStr string, command []string) error {
+func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, idleTimeoutStr string, note string, customUser string, nonblock bool, waitStr string, command []string) error {
 	// Cobra has already processed the "--" separator and given us just the command args
+
+	// "0" disables the timeout, equivalent to leaving it unset
+	if timeoutStr == "0" {
+		timeoutStr = ""
+	}
 
 	// If neither is specified, default to 1 GPU
 	if gpuCount == 0 && len(gpuIDs) == 0 {
@@ -169,6 +182,12 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 			return fmt.Errorf("invalid wait timeout format: %v", err)
 		}
 		waitTimeout = &wt
+	}
+
+	// Parse idle timeout (defaults to types.DefaultRunIdleTimeout; 0 disables)
+	idleTimeout, err := parseIdleTimeout(idleTimeoutStr)
+	if err != nil {
+		return fmt.Errorf("invalid idle timeout: %v", err)
 	}
 
 	client := redis_client.NewClient(config)
@@ -200,6 +219,7 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 			ReservationType: types.ReservationTypeRun,
 			ExpiryTime:      nil, // No expiry for run-type reservations
 			Note:            note,
+			IdleTimeout:     idleTimeout,
 		},
 		Blocking:    !nonblock,
 		WaitTimeout: waitTimeout,
@@ -243,6 +263,11 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 			len(allocatedGPUs), allocatedGPUs)
 	}
 
+	if idleTimeout > 0 {
+		fmt.Printf("Released automatically if no GPU usage is detected for %s\n",
+			utils.FormatDurationShort(idleTimeout))
+	}
+
 	// Close Redis client before spawning supervisor (supervisor will create its own)
 	_ = client.Close()
 
@@ -253,7 +278,7 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 	}
 
 	// Build supervisor command arguments
-	supervisorArgs := buildSupervisorArgs(executable, config, gpuListStr, displayUser, os.Getpid(), timeoutStr)
+	supervisorArgs := buildSupervisorArgs(executable, config, gpuListStr, displayUser, os.Getpid(), timeoutStr, idleTimeout)
 
 	// Start supervisor process (detached, will monitor us)
 	supervisorCmd := exec.Command(supervisorArgs[0], supervisorArgs[1:]...)
@@ -309,7 +334,7 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 // Redis settings are passed explicitly: the supervisor is a fresh process, so
 // without them it would fall back to the default Redis instead of the one this
 // reservation lives in.
-func buildSupervisorArgs(executable string, config *types.Config, gpuList string, user string, pid int, timeout string) []string {
+func buildSupervisorArgs(executable string, config *types.Config, gpuList string, user string, pid int, timeout string, idleTimeout time.Duration) []string {
 	args := []string{
 		executable,
 		"supervisor",
@@ -320,8 +345,11 @@ func buildSupervisorArgs(executable string, config *types.Config, gpuList string
 		"--redis-port", strconv.Itoa(config.RedisPort),
 		"--redis-db", strconv.Itoa(config.RedisDB),
 	}
-	if timeout != "" {
+	if timeout != "" && timeout != "0" {
 		args = append(args, "--timeout", timeout)
+	}
+	if idleTimeout > 0 {
+		args = append(args, "--idle-timeout", utils.FormatDurationShort(idleTimeout))
 	}
 	return args
 }

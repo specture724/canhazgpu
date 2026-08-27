@@ -79,7 +79,7 @@ canhazgpu web --port 8080
 - **Interactive program support**: Full TTY support for interactive programs like Python REPL, codex, vim
 - **Fair queueing**: FCFS queue ensures fair access when GPUs are busy - requests wait automatically
 - **Race condition protection**: Uses Redis-based distributed locking
-- **Automatic cleanup**: GPUs auto-released when processes end or reservations expire
+- **Automatic cleanup**: GPUs auto-released when processes end, reservations expire, or a run job stops using its GPUs (30-minute idle timeout by default)
 - **MRU-per-user allocation**: Smart GPU affinity using most recently used per-user strategy with LRU fallback
 - **Specific GPU reservation**: Reserve exact GPU IDs when needed (e.g., --gpu-ids 1,3)
 - **Unreserved usage detection**: Identifies GPUs in use without proper reservations

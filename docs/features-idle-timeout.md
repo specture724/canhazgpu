@@ -48,9 +48,33 @@ Released GPU 3 reserved by alice: no GPU usage detected for 16m (idle timeout 15
 
 The `status` DETAILS column shows how long a reservation has been idle and when it will be released, so there is no surprise.
 
+## Run reservations get the same protection
+
+`run` reservations are no longer exempt. When you launch a command with `canhazgpu run`, the supervisor watches the reserved GPUs and releases the reservation when no GPU usage is detected for the idle timeout — 30 minutes by default:
+
+```bash
+# Default: released after 30 minutes without GPU usage
+canhazgpu run --gpus 1 -- python train.py
+
+# Longer grace period for a job with a slow startup
+canhazgpu run --gpus 1 --idle-timeout 2h -- python train.py
+
+# No idle detection (e.g. interactive sessions that pause for long stretches)
+canhazgpu run --gpus 1 --idle-timeout 0 -- python train.py
+```
+
+This closes the gap where a wrapper shell outlived its GPU process — for example a vLLM process that crashed and became a zombie while `bash script.sh` kept running. Previously the supervisor kept sending heartbeats and the GPUs stayed reserved forever. Now the supervisor itself notices there is no holder usage and releases the GPUs, even on a quiet host where nobody runs `canhazgpu status` to trigger cleanup.
+
+The same rules apply as for manual reservations:
+
+- Only the holder's own processes reset the clock; somebody else's usage keeps counting as idle.
+- The clock starts when the reservation is created, so the job always gets the full grace period to start touching the GPU.
+- If usage cannot be checked or attributed, the reservation gets the benefit of the doubt and is never released on a guess.
+- `status` shows the idle countdown on run reservations too.
+
 ## What is not affected
 
-**`run` reservations are exempt.** They are tied to the lifetime of a process: the heartbeat releases them when the process exits or dies, and a job may legitimately spend a long time loading data or preprocessing before it touches the GPU. Killing such a reservation would break a running job.
+**Reservations without an idle timeout are exempt.** That includes reservations created before this feature existed, `canhazgpu run --idle-timeout 0`, and any reservation whose stored timeout is zero. They stay tied to the lifetime of their process.
 
 **Reservations are only released when usage can actually be checked.** If `nvidia-smi`/`amd-smi` cannot be queried, idle detection is skipped for that pass rather than guessed at. The same applies to usage that cannot be attributed to an owner.
 
@@ -67,6 +91,7 @@ If a host can be quiet for long stretches, run `canhazgpu web` (its dashboard re
 | Setting | Default | Where |
 |---------|---------|-------|
 | Idle timeout for new manual reservations | `15m` (max `3h`) | `--idle-timeout`, or `reserve.idle-timeout` in the config file |
+| Idle timeout for new `run` reservations | `30m` (max `3h`) | `run --idle-timeout`, or `run.idle-timeout` in the config file |
 | Memory threshold that counts as usage | `100` MB | `--memory-threshold`, or `memory.threshold` |
 
 ```yaml

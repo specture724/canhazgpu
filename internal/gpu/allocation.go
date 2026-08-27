@@ -428,8 +428,8 @@ func (ae *AllocationEngine) buildGPUStatus(gpuID int, state *types.GPUState, usa
 		status.Note = state.Note
 		status.BookingID = state.BookingID
 
-		// Idle tracking, for manual reservations that have an idle timeout
-		if state.Type == types.ReservationTypeManual && state.IdleTimeout > 0 {
+		// Idle tracking for reservations that carry an idle timeout
+		if state.IdleTimeout > 0 {
 			status.IdleTimeout = state.IdleTimeoutDuration()
 			if !IsReservationHolderActive(state, usage, ae.config.MemoryThreshold) {
 				status.IdleFor = time.Since(state.IdleSince())
@@ -591,11 +591,11 @@ func (ae *AllocationEngine) cleanupReservations(ctx context.Context, usage map[i
 			shouldRelease = true
 			reason = "stale heartbeat"
 
-		// Manual reservations nobody is actually using. Run-type reservations
-		// are excluded: they are tied to the lifetime of a process, which may
-		// legitimately spend a long time before touching the GPU.
+		// Reservations nobody is actually using. Run-type reservations only get
+		// this treatment when they carry an explicit idle timeout: the supervisor
+		// stores one so a job whose GPU process died cannot hold the GPUs open
+		// forever, while a job that may still touch the GPU is left alone.
 		case usage != nil &&
-			state.Type == types.ReservationTypeManual &&
 			state.IdleTimeout > 0 &&
 			now.Sub(state.IdleSince()) > state.IdleTimeoutDuration():
 			shouldRelease = true
@@ -631,11 +631,12 @@ func (ae *AllocationEngine) cleanupReservations(ctx context.Context, usage map[i
 }
 
 // refreshActivity records the current time as the last observed activity of a
-// reservation that has an idle timeout, provided the GPU is genuinely in use.
+// reservation that has an idle timeout (manual or run), provided the GPU is
+// genuinely in use by its holder.
 // Writes are rate limited so that frequent maintenance passes do not hammer
 // Redis.
 func (ae *AllocationEngine) refreshActivity(ctx context.Context, gpuID int, state *types.GPUState, usage *types.GPUUsage, now time.Time) {
-	if state.Type != types.ReservationTypeManual || state.IdleTimeout <= 0 {
+	if state.IdleTimeout <= 0 {
 		return
 	}
 	// Only the holder's own work counts: somebody else's processes must not keep

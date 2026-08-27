@@ -12,6 +12,7 @@ import (
 	"github.com/russellb/canhazgpu/internal/redis_client"
 	"github.com/russellb/canhazgpu/internal/types"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // isNvidiaSmiAvailable checks if nvidia-smi command is available
@@ -122,6 +123,17 @@ func TestRunCommand_Structure(t *testing.T) {
 	gpusFlag := runCmd.Flags().Lookup("gpus")
 	assert.NotNil(t, gpusFlag)
 	assert.Equal(t, "int", gpusFlag.Value.Type())
+
+	// Run reservations carry an idle timeout by default so a job whose GPU
+	// process died cannot hold the GPUs forever
+	idleFlag := runCmd.Flags().Lookup("idle-timeout")
+	require.NotNil(t, idleFlag)
+	assert.Equal(t, "30m", idleFlag.DefValue)
+
+	// No command timeout by default; --timeout 0 explicitly disables it
+	timeoutFlag := runCmd.Flags().Lookup("timeout")
+	require.NotNil(t, timeoutFlag)
+	assert.Equal(t, "", timeoutFlag.DefValue)
 }
 
 func TestRunRun_Validation(t *testing.T) {
@@ -154,7 +166,7 @@ func TestRunRun_Validation(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			err := runRun(ctx, tt.gpuCount, nil, "", "", "", true, "", tt.command)
+			err := runRun(ctx, tt.gpuCount, nil, "", "0", "", "", true, "", tt.command)
 
 			if tt.wantErr {
 				assert.Error(t, err)

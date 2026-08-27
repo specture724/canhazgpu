@@ -14,7 +14,8 @@ The `--` separator is important - it tells canhazgpu where its options end and y
 
 - `--gpus, -g`: Number of GPUs to reserve (default: 1)
 - `--gpu-ids`: Specific GPU IDs to reserve (comma-separated, e.g., 1,3,5)
-- `--timeout, -t`: Maximum time to run command before killing it (optional)
+- `--timeout, -t`: Maximum time to run command before killing it (optional, `0` disables)
+- `--idle-timeout`: Release the reservation if no GPU usage is detected for this long (default: 30m, `0` disables)
 
 !!! note "GPU Selection"
     - Use `--gpus` to let canhazgpu select GPUs using the MRU-per-user strategy (with LRU fallback)
@@ -85,7 +86,8 @@ When you run `canhazgpu run --gpus 2 -- python train.py`, here's what happens:
 4. **Environment Setup**: Sets `CUDA_VISIBLE_DEVICES` to the allocated GPU IDs (e.g., "0,3")
 5. **Command Execution**: Runs `python train.py` with the GPU environment
 6. **Heartbeat**: Maintains reservation with periodic heartbeats while running
-7. **Cleanup**: Automatically releases GPUs when the command exits
+7. **Idle Watch**: Releases the reservation if no holder GPU usage is detected within the idle timeout
+8. **Cleanup**: Automatically releases GPUs when the command exits
 
 ## Environment Variables
 
@@ -118,6 +120,23 @@ canhazgpu run --gpus 1 --timeout 30m -- python test_model.py
 # Daily batch job with 12-hour limit
 canhazgpu run --gpus 2 --timeout 12h -- python daily_processing.py
 ```
+
+### Idle Timeout
+
+Run reservations are released automatically when no GPU usage is detected for the configured idle timeout (30 minutes by default). This prevents a wrapper shell that outlived its GPU process — for example a crashed vLLM worker whose parent `bash` keeps running — from holding GPUs indefinitely.
+
+```bash
+# Default: released after 30 minutes without GPU usage
+canhazgpu run --gpus 1 -- python train.py
+
+# Longer grace period for a job with a slow startup
+canhazgpu run --gpus 1 --idle-timeout 2h -- python train.py
+
+# Disable for interactive sessions that pause for long stretches
+canhazgpu run --gpus 1 --idle-timeout 0 -- python
+```
+
+The clock starts when the reservation is created and resets every time canhazgpu observes the holder's own GPU usage. Only the holder's processes count: somebody else's usage does not keep the reservation alive.
 
 !!! tip "Default Timeout Configuration"
     You can set a default timeout in your [configuration file](configuration.md) to avoid specifying it every time:

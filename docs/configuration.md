@@ -58,6 +58,8 @@ guard:
 run:
   gpus: 1
   timeout: "2h"
+  # Release the reservation after this long without any holder GPU usage (0 disables)
+  idle-timeout: "30m"
 
 # Default settings for 'reserve' command  
 reserve:

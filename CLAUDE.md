@@ -29,7 +29,7 @@ The tool is a Go application structured as a CLI with internal packages that imp
 - **GPU Allocation Logic**: Tracks GPU state with JSON objects containing user, timestamps, heartbeat data, and reservation types
 - **Heartbeat System**: Background goroutine sends periodic heartbeats (60s interval) to maintain run-type reservations
 - **Auto-cleanup**: GPUs are automatically released when heartbeat expires (5 min timeout), manual reservations expire, or processes terminate
-- **Idle Timeout**: Manual reservations with no detected GPU usage for their idle timeout (default 15 min) are released automatically; run-type reservations are exempt since they end with their process
+- **Idle Timeout**: Reservations with no detected GPU usage for their idle timeout are released automatically. Manual reservations default to 15 min; run-type reservations default to 30 min and the supervisor enforces it, so a wrapper shell that outlived its GPU process cannot hold the GPUs forever
 - **Scheduled Bookings**: Meeting-room style bookings claim specific GPUs for a future window, block conflicting reservations beforehand, and preempt whatever still holds those GPUs when the window starts
 - **Guard/Enforcement**: Optional daemon (`canhazgpu guard`) compares process owners against reservation holders, warns offenders by writing into their process's stderr and terminals, escalates to SIGINT/SIGTERM/SIGKILL with `--enforce`, and records violations for reporting
 - **Unreserved Usage Detection**: Provider-specific integration detects GPUs in use without proper reservations
@@ -258,7 +258,7 @@ redis-cli get "canhazgpu:provider"
 
 ### Reservation Types
 
-- **Run-type**: Maintained by heartbeat, auto-released when process ends
+- **Run-type**: Maintained by heartbeat, auto-released when process ends (or after the run idle timeout without GPU usage)
 - **Manual-type**: Time-based expiry, explicit release required, released early when idle (see below)
 - **Bookings**: Future time windows (`reserve --start`) that activate into manual reservations
 - `LastReleased` timestamp tracking for global LRU fallback allocation
@@ -268,8 +268,8 @@ redis-cli get "canhazgpu:provider"
 ### Maintenance Pass, Idle Timeout and Bookings
 
 - `CleanupExpiredReservations()` in `internal/gpu/allocation.go` is the shared maintenance hook every command runs before reading or handing out GPUs. It detects GPU usage once (cached for 1s), activates due bookings, releases expired/stale/idle reservations, and prunes finished bookings
-- Idle timeout: manual reservations store `idle_timeout` (seconds) and `last_activity`; the maintenance pass refreshes `last_activity` whenever the **holder's own** usage is observed (`IsReservationHolderActive()` in `validation.go` attributes usage by process owner) and releases the reservation once `now - last_activity` exceeds the timeout. Skipped entirely when usage detection fails or cannot be attributed, so unverifiable reservations are never released
-- `--idle-timeout` on `reserve` (default 15m, `0` disables); run-type reservations never carry one
+- Idle timeout: manual and run reservations store `idle_timeout` (seconds) and `last_activity`; the maintenance pass refreshes `last_activity` whenever the **holder's own** usage is observed (`IsReservationHolderActive()` in `validation.go` attributes usage by process owner) and releases the reservation once `now - last_activity` exceeds the timeout. Skipped entirely when usage detection fails or cannot be attributed, so unverifiable reservations are never released
+- `--idle-timeout` on `reserve` (default 15m) and on `run` (default 30m, `0` disables); run-type reservations store it too, and the supervisor enforces it with `RunIdleMonitor` (`internal/gpu/run_idle.go`) so the reservation is released even on a quiet host
 - Bookings (`internal/gpu/booking.go`): GPUs are chosen at booking time; `applyBookingProtection()` excludes booked GPUs from allocation for the window a reservation would cover (`ExpiryTime`, or `--booking-protection-window` ahead for run-type); `activateDueBookings()` preempts remaining holders and writes a manual reservation expiring at the window's end
 - Releasing a booked GPU (`release`, idle timeout, expiry, `schedule --cancel`) marks the booking completed
 
@@ -287,7 +287,8 @@ redis-cli get "canhazgpu:provider"
 ### Run and Supervisor
 
 - `run` reserves GPUs, spawns a detached `canhazgpu supervisor` child and then execs the job, so the reservation's `pid` is the job itself
-- The supervisor is a fresh process with its own config: `buildSupervisorArgs()` in `internal/cli/run.go` passes the resolved Redis host/port/db on its command line, otherwise it would connect to the default instance and immediately lose the reservation it was spawned to hold
+- The supervisor is a fresh process with its own config: `buildSupervisorArgs()` in `internal/cli/run.go` passes the resolved Redis host/port/db (and `--idle-timeout`) on its command line, otherwise it would connect to the default instance and immediately lose the reservation it was spawned to hold
+- The supervisor runs an idle watch alongside the heartbeat: every 15s it checks whether the holder's own GPU usage is visible on the reserved GPUs and stops heartbeating (releasing the GPUs) once the idle timeout has elapsed, even if the wrapped process is still alive
 
 ### Task IDs and Cancellation
 

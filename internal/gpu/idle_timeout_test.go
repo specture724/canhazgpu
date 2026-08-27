@@ -57,15 +57,15 @@ func TestCleanupReservations_ReleasesIdleManualReservation(t *testing.T) {
 		LastActivity: types.FlexibleTime{Time: now.Add(-time.Minute)},
 	}))
 
-	// GPU 2: run-type reservation that has never touched the GPU. Idle
-	// detection must leave it alone - the process decides when it is done.
+	// GPU 2: run-type reservation without an idle timeout. The process decides
+	// when it is done, so it must be left alone even if it never touches the
+	// GPU.
 	require.NoError(t, client.SetGPUState(ctx, 2, &types.GPUState{
 		User:          "carol",
 		ActualUser:    "carol",
 		StartTime:     types.FlexibleTime{Time: now.Add(-time.Hour)},
 		Type:          types.ReservationTypeRun,
 		LastHeartbeat: types.FlexibleTime{Time: now},
-		IdleTimeout:   int64((15 * time.Minute).Seconds()),
 	}))
 
 	// Empty usage map: no GPU is in use, but usage detection did succeed
@@ -82,7 +82,36 @@ func TestCleanupReservations_ReleasesIdleManualReservation(t *testing.T) {
 
 	state, err = client.GetGPUState(ctx, 2)
 	require.NoError(t, err)
-	assert.Equal(t, "carol", state.User, "run-type reservations are exempt from idle release")
+	assert.Equal(t, "carol", state.User, "run-type reservations without an idle timeout are exempt from idle release")
+}
+
+func TestCleanupReservations_ReleasesIdleRunReservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	engine, client, ctx := setupBookingTestEngine(t, 1)
+	now := time.Now()
+
+	// A run reservation whose GPU processes died: the wrapper shell is still
+	// alive (fresh heartbeat) but nothing has touched the GPU for longer than
+	// the idle timeout. This is exactly the vLLM-zombie scenario that used to
+	// hold GPUs forever.
+	require.NoError(t, client.SetGPUState(ctx, 0, &types.GPUState{
+		User:          "alice",
+		ActualUser:    "alice",
+		StartTime:     types.FlexibleTime{Time: now.Add(-time.Hour)},
+		Type:          types.ReservationTypeRun,
+		LastHeartbeat: types.FlexibleTime{Time: now},
+		IdleTimeout:   int64((15 * time.Minute).Seconds()),
+		LastActivity:  types.FlexibleTime{Time: now.Add(-20 * time.Minute)},
+	}))
+
+	require.NoError(t, engine.cleanupReservations(ctx, map[int]*types.GPUUsage{}))
+
+	state, err := client.GetGPUState(ctx, 0)
+	require.NoError(t, err)
+	assert.Empty(t, state.User, "idle run reservation should be released")
 }
 
 func TestCleanupReservations_SkipsIdleChecksWithoutUsageData(t *testing.T) {
@@ -322,7 +351,8 @@ func TestAllocateGPUs_ManualReservationStoresIdleTimeout(t *testing.T) {
 	assert.False(t, state.LastActivity.ToTime().IsZero(),
 		"the idle clock starts when the reservation is created")
 
-	// Run-type reservations never carry an idle timeout
+	// Run-type reservations store the idle timeout too: the supervisor uses it
+	// to release a job whose GPU process died while the wrapper lives on
 	runAllocated, err := engine.AllocateGPUs(ctx, &types.AllocationRequest{
 		GPUCount:        1,
 		User:            "bob",
@@ -335,7 +365,9 @@ func TestAllocateGPUs_ManualReservationStoresIdleTimeout(t *testing.T) {
 
 	state, err = client.GetGPUState(ctx, runAllocated[0])
 	require.NoError(t, err)
-	assert.Equal(t, int64(0), state.IdleTimeout)
+	assert.Equal(t, int64(900), state.IdleTimeout)
+	assert.False(t, state.LastActivity.ToTime().IsZero(),
+		"the idle clock starts when the run reservation is created")
 }
 
 func TestAllocateSpecificGPUs_StoresIdleTimeout(t *testing.T) {

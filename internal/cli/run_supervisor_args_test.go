@@ -3,6 +3,7 @@ package cli
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/russellb/canhazgpu/internal/types"
 	"github.com/stretchr/testify/assert"
@@ -14,7 +15,7 @@ import (
 func TestBuildSupervisorArgs_ForwardsRedisSettings(t *testing.T) {
 	config := &types.Config{RedisHost: "redis.example", RedisPort: 6380, RedisDB: 15}
 
-	args := buildSupervisorArgs("/usr/local/bin/canhazgpu", config, "1,2", "alice", 4242, "2h")
+	args := buildSupervisorArgs("/usr/local/bin/canhazgpu", config, "1,2", "alice", 4242, "2h", 30*time.Minute)
 	line := strings.Join(args, " ")
 
 	assert.Equal(t, "/usr/local/bin/canhazgpu", args[0])
@@ -26,8 +27,15 @@ func TestBuildSupervisorArgs_ForwardsRedisSettings(t *testing.T) {
 	assert.Contains(t, line, "--user alice")
 	assert.Contains(t, line, "--pid 4242")
 	assert.Contains(t, line, "--timeout 2h")
+	assert.Contains(t, line, "--idle-timeout 30m")
 
 	// Without a timeout the flag is left out entirely
-	args = buildSupervisorArgs("canhazgpu", config, "0", "bob", 1, "")
+	args = buildSupervisorArgs("canhazgpu", config, "0", "bob", 1, "", 0)
 	assert.NotContains(t, strings.Join(args, " "), "--timeout")
+	assert.NotContains(t, strings.Join(args, " "), "--idle-timeout")
+
+	// "0" also disables the timeout and leaves the flag off the command line
+	args = buildSupervisorArgs("canhazgpu", config, "0", "bob", 1, "0", 30*time.Minute)
+	assert.NotContains(t, strings.Join(args, " "), "--timeout")
+	assert.Contains(t, strings.Join(args, " "), "--idle-timeout 30m")
 }

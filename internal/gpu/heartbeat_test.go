@@ -42,9 +42,38 @@ func TestHeartbeatManager_StartStop(t *testing.T) {
 	}
 	redisClient := redis_client.NewClient(config)
 
+	ctx := context.Background()
+	if err := redisClient.Ping(ctx); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
+	if err := redisClient.ClearAllGPUStates(ctx); err != nil {
+		t.Skipf("Cannot clear GPU states (Redis issue?): %v", err)
+	}
+	if err := redisClient.SetGPUCount(ctx, 2); err != nil {
+		t.Skipf("Cannot set GPU count (Redis issue?): %v", err)
+	}
+
 	// Test starting heartbeat
 	gpuIDs := []int{0, 1}
 	user := "testuser"
+
+	// Set up the reservations first (required for the initial heartbeat to succeed)
+	now := time.Now()
+	for _, gpuID := range gpuIDs {
+		if err := redisClient.SetGPUState(ctx, gpuID, &types.GPUState{
+			User:          user,
+			StartTime:     types.FlexibleTime{Time: now},
+			LastHeartbeat: types.FlexibleTime{Time: now},
+			Type:          types.ReservationTypeRun,
+		}); err != nil {
+			t.Skipf("Cannot set up GPU state (Redis issue?): %v", err)
+		}
+	}
+	defer func() {
+		for _, gpuID := range gpuIDs {
+			_ = redisClient.SetGPUState(ctx, gpuID, &types.GPUState{LastReleased: types.FlexibleTime{Time: time.Now()}})
+		}
+	}()
 
 	manager := NewHeartbeatManager(redisClient, gpuIDs, user)
 
@@ -86,8 +115,33 @@ func TestHeartbeatManager_Wait(t *testing.T) {
 	}
 	redisClient := redis_client.NewClient(config)
 
+	ctx := context.Background()
+	if err := redisClient.Ping(ctx); err != nil {
+		t.Skipf("Redis not available: %v", err)
+	}
+	if err := redisClient.ClearAllGPUStates(ctx); err != nil {
+		t.Skipf("Cannot clear GPU states (Redis issue?): %v", err)
+	}
+	if err := redisClient.SetGPUCount(ctx, 1); err != nil {
+		t.Skipf("Cannot set GPU count (Redis issue?): %v", err)
+	}
+
 	gpuIDs := []int{0}
 	user := "testuser"
+
+	// Set up the reservation first (required for the initial heartbeat to succeed)
+	now := time.Now()
+	if err := redisClient.SetGPUState(ctx, 0, &types.GPUState{
+		User:          user,
+		StartTime:     types.FlexibleTime{Time: now},
+		LastHeartbeat: types.FlexibleTime{Time: now},
+		Type:          types.ReservationTypeRun,
+	}); err != nil {
+		t.Skipf("Cannot set up GPU state (Redis issue?): %v", err)
+	}
+	defer func() {
+		_ = redisClient.SetGPUState(ctx, 0, &types.GPUState{LastReleased: types.FlexibleTime{Time: time.Now()}})
+	}()
 
 	manager := NewHeartbeatManager(redisClient, gpuIDs, user)
 

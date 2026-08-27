@@ -25,6 +25,7 @@ var supervisorCmd = &cobra.Command{
 		user, _ := cmd.Flags().GetString("user")
 		pidStr, _ := cmd.Flags().GetString("pid")
 		timeoutStr, _ := cmd.Flags().GetString("timeout")
+		idleTimeoutStr, _ := cmd.Flags().GetString("idle-timeout")
 
 		// Parse GPU IDs
 		gpuIDs, err := parseGPUList(gpuStr)
@@ -38,10 +39,10 @@ var supervisorCmd = &cobra.Command{
 			return fmt.Errorf("invalid PID: %v", err)
 		}
 
-		// Parse timeout if provided
+		// Parse timeout if provided ("0" disables the timeout)
 		var timeout time.Duration
 		var hasTimeout bool
-		if timeoutStr != "" {
+		if timeoutStr != "" && timeoutStr != "0" {
 			timeout, err = utils.ParseDuration(timeoutStr)
 			if err != nil {
 				return fmt.Errorf("invalid timeout: %v", err)
@@ -49,7 +50,13 @@ var supervisorCmd = &cobra.Command{
 			hasTimeout = true
 		}
 
-		return runSupervisor(cmd.Context(), gpuIDs, user, pid, timeout, hasTimeout)
+		// Parse idle timeout if provided ("" or "0" disables idle release)
+		idleTimeout, err := parseIdleTimeout(idleTimeoutStr)
+		if err != nil {
+			return fmt.Errorf("invalid idle timeout: %v", err)
+		}
+
+		return runSupervisor(cmd.Context(), gpuIDs, user, pid, timeout, hasTimeout, idleTimeout)
 	},
 }
 
@@ -58,6 +65,7 @@ func init() {
 	supervisorCmd.Flags().String("user", "", "User who owns the reservation")
 	supervisorCmd.Flags().String("pid", "", "PID of the process to monitor")
 	supervisorCmd.Flags().String("timeout", "", "Timeout duration for the command")
+	supervisorCmd.Flags().String("idle-timeout", "", "Release the reservation if no GPU usage is detected for this long (0 disables)")
 
 	rootCmd.AddCommand(supervisorCmd)
 }
@@ -81,7 +89,7 @@ func parseGPUList(s string) ([]int, error) {
 }
 
 // runSupervisor runs the supervisor loop that monitors a process and maintains GPU heartbeats
-func runSupervisor(ctx context.Context, gpuIDs []int, user string, pid int, timeout time.Duration, hasTimeout bool) error {
+func runSupervisor(ctx context.Context, gpuIDs []int, user string, pid int, timeout time.Duration, hasTimeout bool, idleTimeout time.Duration) error {
 	// Ignore SIGHUP so the supervisor survives SSH disconnects and terminal
 	// closures. The monitored process (e.g., vllm serve) may also ignore
 	// SIGHUP; if the supervisor died here, nobody would send heartbeats and
@@ -111,7 +119,12 @@ func runSupervisor(ctx context.Context, gpuIDs []int, user string, pid int, time
 	if err := heartbeat.Start(); err != nil {
 		return fmt.Errorf("supervisor: failed to start heartbeat: %v", err)
 	}
-	defer heartbeat.Stop()
+	released := false
+	defer func() {
+		if !released {
+			heartbeat.Stop()
+		}
+	}()
 
 	// Set up timeout handling if configured
 	var timeoutChan <-chan time.Time
@@ -121,10 +134,21 @@ func runSupervisor(ctx context.Context, gpuIDs []int, user string, pid int, time
 		timeoutChan = timer.C
 	}
 
+	// Idle monitor: a run reservation whose GPU processes died while the
+	// wrapped shell keeps running must not hold the GPUs forever. The monitor
+	// watches for the holder's own GPU usage and tells us when it has been
+	// absent for longer than the configured idle timeout.
+	var idleMonitor *gpu.RunIdleMonitor
+	if idleTimeout > 0 {
+		idleMonitor = gpu.NewRunIdleMonitor(gpu.NewAllocationEngine(client, config), gpuIDs, user, idleTimeout)
+	}
+
 	// Monitor the process
 	pollInterval := 500 * time.Millisecond
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
+	idleTicker := time.NewTicker(gpu.RunIdleCheckInterval)
+	defer idleTicker.Stop()
 
 	for {
 		select {
@@ -141,6 +165,21 @@ func runSupervisor(ctx context.Context, gpuIDs []int, user string, pid int, time
 			fmt.Fprintf(os.Stderr, "supervisor: timeout reached after %s, sending SIGINT to process %d\n",
 				utils.FormatDuration(timeout), pid)
 			gracefulKill(pid)
+			return nil
+
+		case <-idleTicker.C:
+			if idleMonitor == nil {
+				continue
+			}
+			idleFor, shouldRelease := idleMonitor.Check(ctx)
+			if !shouldRelease {
+				continue
+			}
+			fmt.Fprintf(os.Stderr,
+				"supervisor: releasing GPU reservation: no GPU usage detected for %s (idle timeout %s)\n",
+				utils.FormatDurationShort(idleFor), utils.FormatDurationShort(idleTimeout))
+			heartbeat.Stop()
+			released = true
 			return nil
 
 		case <-ticker.C:

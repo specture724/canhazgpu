@@ -375,12 +375,15 @@ func (c *Client) AtomicReserveGPUs(ctx context.Context, request *types.Allocatio
 				if expiry_time ~= "nil" then
 					state.expiry_time = tonumber(expiry_time)
 				end
-				-- Idle timeout only applies to manual reservations: run-type
-				-- reservations are already tied to the lifetime of a process
-				if idle_timeout and idle_timeout > 0 then
-					state.idle_timeout = idle_timeout
-					state.last_activity = current_time
-				end
+			end
+
+			-- Idle timeout applies to manual and run-type reservations alike. For
+			-- run reservations the supervisor watches GPU usage and releases the
+			-- GPUs when the wrapped job goes idle; the clock starts now so the
+			-- owner gets the full grace period to launch GPU work.
+			if idle_timeout and idle_timeout > 0 then
+				state.idle_timeout = idle_timeout
+				state.last_activity = current_time
 			end
 
 			-- Add note if provided
@@ -591,12 +594,15 @@ func (c *Client) atomicReserveSpecificGPUs(ctx context.Context, request *types.A
 				if expiry_time ~= "nil" then
 					state.expiry_time = tonumber(expiry_time)
 				end
-				-- Idle timeout only applies to manual reservations: run-type
-				-- reservations are already tied to the lifetime of a process
-				if idle_timeout and idle_timeout > 0 then
-					state.idle_timeout = idle_timeout
-					state.last_activity = current_time
-				end
+			end
+
+			-- Idle timeout applies to manual and run-type reservations alike. For
+			-- run reservations the supervisor watches GPU usage and releases the
+			-- GPUs when the wrapped job goes idle; the clock starts now so the
+			-- owner gets the full grace period to launch GPU work.
+			if idle_timeout and idle_timeout > 0 then
+				state.idle_timeout = idle_timeout
+				state.last_activity = current_time
 			end
 
 			-- Add note if provided

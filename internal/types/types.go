@@ -418,9 +418,16 @@ const (
 	// detected GPU usage before it is released automatically
 	DefaultIdleTimeout = 15 * time.Minute
 
-	// MaxIdleTimeout is the upper bound for a manual reservation's idle
-	// timeout; larger values are rejected so forgotten reservations cannot
-	// hold GPUs indefinitely
+	// DefaultRunIdleTimeout is how long a run-type reservation may sit without
+	// any detected GPU usage before the supervisor releases it. It defaults to
+	// 30 minutes: long enough for a job to load and touch the GPU, short enough
+	// that a wrapper shell which outlived its GPU process cannot squat on the
+	// GPUs for long.
+	DefaultRunIdleTimeout = 30 * time.Minute
+
+	// MaxIdleTimeout is the upper bound for a reservation's idle timeout;
+	// larger values are rejected so forgotten reservations cannot hold GPUs
+	// indefinitely
 	MaxIdleTimeout = 3 * time.Hour
 
 	// DefaultBookingProtectionWindow is how far ahead reservations without a
