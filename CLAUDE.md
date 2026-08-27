@@ -295,7 +295,7 @@ redis-cli get "canhazgpu:provider"
 - Every reservation carries a short `task_id` (8 hex chars) generated in `AllocateGPUs`; all GPUs of one job share it, and a queued request keeps the ID it was shown while waiting (`QueueEntry.ShortID()`)
 - Run-type reservations and queue entries also store the `pid` of the process holding them. That process is the one that execs the job, so signalling it stops the job and lets the supervisor release the GPUs
 - `internal/gpu/tasks.go`: `GetRunningTasks()` groups GPU states by task ID for `queue`; `FindTask()`/`FindQueuedTask()` resolve ID prefixes
-- `internal/gpu/cancel.go`: `CancelTask()` signals the owning process (SIGTERM, then SIGKILL after `cancelKillGrace`) and waits `cancelReleaseGrace` for the supervisor to release the GPUs, falling back to releasing them directly when no process is left. Manual reservations have no process and are released directly
+- `internal/gpu/cancel.go`: `CancelTask()` signals the owning process (SIGTERM, then SIGKILL after `cancelKillGrace`) and also stops the live GPU processes belonging to the task's account (`gpuProcessesForTask()`), so a wrapper shell that outlived its GPU children cannot leave the GPUs occupied. It waits `cancelReleaseGrace` for the supervisor to release the GPUs, falling back to releasing them directly when no process is left. Manual reservations have no process and are released directly
 - Reservations created before task IDs existed show `-` in `queue` and cannot be cancelled; `release` still handles them
 
 ### Locking and Concurrency

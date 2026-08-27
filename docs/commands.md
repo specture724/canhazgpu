@@ -582,13 +582,13 @@ IDs may be abbreviated as long as they stay unique.
 | Task | Effect |
 |------|--------|
 | Waiting in the queue | The waiting process is signalled and the queue entry is removed, along with any partial allocation |
-| `run` reservation | SIGTERM to the job, SIGKILL if it has not exited after 10 seconds; its GPUs are released when it goes |
+| `run` reservation | SIGTERM to the job and to any GPU processes belonging to it, SIGKILL after 10 seconds if they are still alive; the GPUs are released |
 | `manual` reservation | Released directly - there is no process of its own to stop |
 
 **Examples:**
 ```bash
 ❯ canhazgpu cancel 45b590f7
-✓ 45b590f7: PID 31337 terminated, GPUs 1,2 released
+✓ 45b590f7: PID 31337 terminated, GPUs 1,2 released (3 GPU processes stopped)
 
 ❯ canhazgpu cancel 7899e60d
 ✓ 7899e60d: removed from the queue (signalled PID 28114)

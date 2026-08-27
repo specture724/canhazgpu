@@ -12,13 +12,14 @@ import (
 
 // CancelResult describes what cancelling a task did
 type CancelResult struct {
-	TaskID    string
-	User      string
-	Queued    bool  // The task was waiting in the queue, not holding GPUs
-	GPUs      []int // GPUs the task held (or had partially allocated)
-	Signalled int   // Process that was signalled, 0 if there was none to signal
-	Killed    bool  // The process ignored SIGTERM and was killed
-	Released  bool  // The reservation was released directly, without a process
+	TaskID             string
+	User               string
+	Queued             bool  // The task was waiting in the queue, not holding GPUs
+	GPUs               []int // GPUs the task held (or had partially allocated)
+	Signalled          int   // Job process that was signalled, 0 if there was none to signal
+	Killed             bool  // The job process ignored SIGTERM and was killed
+	GPUProcessesKilled int   // Live GPU processes belonging to the task that were stopped
+	Released           bool  // The reservation was released directly, without a process
 }
 
 const (
@@ -106,20 +107,41 @@ func (ae *AllocationEngine) cancelRunningTask(ctx context.Context, task *Running
 		GPUs:   task.GPUs,
 	}
 
-	// A run-type reservation is held by a live process: killing it makes the
-	// supervisor release the GPUs, which also stops the job itself
-	if signalProcess(task.PID, syscall.SIGTERM) {
+	// Stop the job's own process first: its exit is what tells the supervisor
+	// to hand the GPUs back, and giving it a chance to clean up its children is
+	// gentler than killing them out from under it
+	if task.PID > 0 && isProcessAlive(task.PID) && signalProcess(task.PID, syscall.SIGTERM) {
 		result.Signalled = task.PID
-		if !waitForExit(task.PID, cancelKillGrace) {
-			if signalProcess(task.PID, syscall.SIGKILL) {
-				result.Killed = true
-			}
-			waitForExit(task.PID, cancelKillGrace)
+	}
+
+	// The stored PID can be a wrapper shell that outlived its GPU children, or
+	// the children can survive once reparented (and a stopped shell does not
+	// die from SIGTERM until continued). Cancelling a task must therefore also
+	// stop whatever is actually using the GPUs.
+	gpuProcesses := ae.gpuProcessesForTask(ctx, task)
+	for _, pid := range gpuProcesses {
+		if pid != task.PID && signalProcess(pid, syscall.SIGTERM) {
+			result.GPUProcessesKilled++
 		}
-		// The supervisor releases the GPUs once it sees the job exit
-		if waitForRelease(ctx, ae, task, cancelReleaseGrace) {
-			return result, nil
+	}
+
+	if result.Signalled > 0 && !waitForExit(task.PID, cancelKillGrace) {
+		if signalProcess(task.PID, syscall.SIGKILL) {
+			result.Killed = true
 		}
+		waitForExit(task.PID, cancelKillGrace)
+	}
+
+	// Escalate the GPU processes that ignored SIGTERM
+	for _, pid := range gpuProcesses {
+		if pid != task.PID && isProcessAlive(pid) {
+			signalProcess(pid, syscall.SIGKILL)
+		}
+	}
+
+	// The supervisor releases the GPUs once it sees the job exit
+	if result.Signalled > 0 && waitForRelease(ctx, ae, task, cancelReleaseGrace) {
+		return result, nil
 	}
 
 	// Nothing (left) to signal, so release the reservation here
@@ -149,6 +171,52 @@ func waitForExit(pid int, timeout time.Duration) bool {
 		time.Sleep(200 * time.Millisecond)
 	}
 	return !isProcessAlive(pid)
+}
+
+// taskGPUProcessPIDs returns the PIDs of processes using the task's GPUs that
+// belong to the task's OS account, deduplicated. Processes whose owner cannot
+// be determined are never targeted: killing an unidentified process could hit
+// somebody else's work.
+func taskGPUProcessPIDs(account string, gpus []int, usage map[int]*types.GPUUsage) []int {
+	if account == "" {
+		return nil
+	}
+	seen := make(map[int]bool)
+	var pids []int
+	for _, gpuID := range gpus {
+		gpuUsage := usage[gpuID]
+		if gpuUsage == nil {
+			continue
+		}
+		for _, proc := range gpuUsage.Processes {
+			if proc.PID <= 0 || proc.User == "" || proc.User != account {
+				continue
+			}
+			if seen[proc.PID] {
+				continue
+			}
+			seen[proc.PID] = true
+			pids = append(pids, proc.PID)
+		}
+	}
+	return pids
+}
+
+// gpuProcessesForTask detects live GPU usage and returns the PIDs of the
+// task's own processes using its GPUs. Best effort: when usage cannot be
+// detected the list is empty and cancel falls back to the stored PID alone.
+func (ae *AllocationEngine) gpuProcessesForTask(ctx context.Context, task *RunningTask) []int {
+	usage, err := ae.detectGPUUsage(ctx)
+	if err != nil {
+		return nil
+	}
+	var live []int
+	for _, pid := range taskGPUProcessPIDs(task.Account(), task.GPUs, usage) {
+		if isProcessAlive(pid) {
+			live = append(live, pid)
+		}
+	}
+	return live
 }
 
 // waitForRelease waits for the job's supervisor to hand the GPUs back

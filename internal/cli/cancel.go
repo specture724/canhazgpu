@@ -17,8 +17,9 @@ var cancelCmd = &cobra.Command{
 
 A queued task is removed from the queue. A running task is stopped by
 signalling the process that holds the reservation (SIGTERM, then SIGKILL if it
-does not exit), which releases its GPUs. Manual reservations have no process of
-their own and are simply released.
+does not exit) and any GPU processes belonging to the task, which releases its
+GPUs even when the job's wrapper shell has outlived its GPU children. Manual
+reservations have no process of their own and are simply released.
 
 Only your own tasks can be cancelled unless --force is given.
 
@@ -70,19 +71,29 @@ func runCancel(ctx context.Context, refs []string, force bool) error {
 }
 
 func describeCancel(result *gpu.CancelResult) string {
+	var base string
 	switch {
 	case result.Queued:
 		if result.Signalled > 0 {
-			return fmt.Sprintf("✓ %s: removed from the queue (signalled PID %d)", result.TaskID, result.Signalled)
+			base = fmt.Sprintf("✓ %s: removed from the queue (signalled PID %d)", result.TaskID, result.Signalled)
+		} else {
+			base = fmt.Sprintf("✓ %s: removed from the queue", result.TaskID)
 		}
-		return fmt.Sprintf("✓ %s: removed from the queue", result.TaskID)
 	case result.Killed:
-		return fmt.Sprintf("✓ %s: PID %d ignored SIGTERM and was killed, GPUs %s released",
+		base = fmt.Sprintf("✓ %s: PID %d ignored SIGTERM and was killed, GPUs %s released",
 			result.TaskID, result.Signalled, formatGPUList(result.GPUs))
 	case result.Signalled > 0:
-		return fmt.Sprintf("✓ %s: PID %d terminated, GPUs %s released",
+		base = fmt.Sprintf("✓ %s: PID %d terminated, GPUs %s released",
 			result.TaskID, result.Signalled, formatGPUList(result.GPUs))
 	default:
-		return fmt.Sprintf("✓ %s: reservation released, GPUs %s", result.TaskID, formatGPUList(result.GPUs))
+		base = fmt.Sprintf("✓ %s: reservation released, GPUs %s", result.TaskID, formatGPUList(result.GPUs))
 	}
+	if result.GPUProcessesKilled > 0 {
+		plural := ""
+		if result.GPUProcessesKilled > 1 {
+			plural = "s"
+		}
+		base += fmt.Sprintf(" (%d GPU process%s stopped)", result.GPUProcessesKilled, plural)
+	}
+	return base
 }
