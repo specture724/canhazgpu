@@ -80,10 +80,10 @@ canhazgpu run --gpus 1 -- jupyter notebook --ip=0.0.0.0 --port=8888
 
 When you run `canhazgpu run --gpus 2 -- python train.py`, here's what happens:
 
-1. **GPU Validation**: Uses nvidia-smi to check actual GPU usage
+1. **Device Validation**: Uses the configured provider to check actual device usage
 2. **Conflict Detection**: Identifies GPUs in use without proper reservations
 3. **Allocation**: Reserves 2 GPUs using the MRU-per-user strategy (with LRU fallback)
-4. **Environment Setup**: Sets `CUDA_VISIBLE_DEVICES` to the allocated GPU IDs (e.g., "0,3")
+4. **Environment Setup**: Sets the provider visibility variable to the allocated device IDs (e.g., "0,3")
 5. **Command Execution**: Runs `python train.py` with the GPU environment
 6. **Heartbeat**: Maintains reservation with periodic heartbeats while running
 7. **Idle Watch**: Releases the reservation if no holder GPU usage is detected within the idle timeout
@@ -91,12 +91,18 @@ When you run `canhazgpu run --gpus 2 -- python train.py`, here's what happens:
 
 ## Environment Variables
 
-The `run` command automatically sets:
+The `run` command automatically sets the visibility variable for the configured
+provider:
 
-- `CUDA_VISIBLE_DEVICES`: Comma-separated list of allocated GPU IDs
-- Your command sees only the reserved GPUs as GPU 0, 1, 2, etc.
+| Provider | Variable |
+| --- | --- |
+| NVIDIA or AMD | `CUDA_VISIBLE_DEVICES` |
+| Huawei Ascend | `ASCEND_RT_VISIBLE_DEVICES` |
 
-Example: If GPUs 1 and 3 are allocated, `CUDA_VISIBLE_DEVICES=1,3` is set, and your PyTorch code will see them as `cuda:0` and `cuda:1`.
+Each value is a comma-separated list of allocated logical device IDs. For
+example, NVIDIA/AMD jobs allocated devices 1 and 3 receive
+`CUDA_VISIBLE_DEVICES=1,3`; Ascend jobs receive
+`ASCEND_RT_VISIBLE_DEVICES=1,3`.
 
 ## Advanced Usage
 
@@ -202,7 +208,7 @@ This indicates high contention. Try again in a few seconds.
 
 ### Resource Planning
 - **Estimate GPU needs**: Start with fewer GPUs and scale up if needed
-- **Monitor memory usage**: Use `nvidia-smi` during training to optimize allocation
+- **Monitor memory usage**: Use the provider tool during training (`nvidia-smi`, `amd-smi`, or `npu-smi info`)
 - **Test with small datasets**: Verify your code works before requesting many GPUs
 
 ### Command Structure
@@ -253,8 +259,11 @@ WantedBy=multi-user.target
 
 ### Resource Usage
 ```bash
-# Monitor GPU usage while job runs
+# Monitor NVIDIA GPU usage while job runs
 watch -n 5 nvidia-smi
+
+# On Huawei Ascend, inspect NPU usage instead
+watch -n 5 npu-smi info
 
 # Check heartbeat status
 canhazgpu status  # Look for "last heartbeat" info

@@ -129,8 +129,11 @@ Perfect for Jupyter notebooks, IPython sessions, or iterative model development:
 canhazgpu reserve --duration 4h
 # Note the GPU IDs from the output, e.g., "Reserved 1 GPU(s): [2]"
 
-# Manually set CUDA_VISIBLE_DEVICES
+# Manually set the NVIDIA/AMD visibility variable
 export CUDA_VISIBLE_DEVICES=2
+
+# On Huawei Ascend, use the CANN visibility variable instead
+export ASCEND_RT_VISIBLE_DEVICES=2
 
 # Start Jupyter with the reserved GPU
 jupyter notebook
@@ -146,8 +149,11 @@ Reserve GPUs while you prepare and test your batch jobs:
 canhazgpu reserve --gpus 2 --duration 2h
 # Note the GPU IDs from the output, e.g., "Reserved 2 GPU(s): [1, 3]"
 
-# Manually set CUDA_VISIBLE_DEVICES
+# Manually set the NVIDIA/AMD visibility variable
 export CUDA_VISIBLE_DEVICES=1,3
+
+# On Huawei Ascend, use the CANN visibility variable instead
+export ASCEND_RT_VISIBLE_DEVICES=1,3
 
 # Test your scripts with the reserved GPUs
 python test_distributed.py
@@ -191,7 +197,7 @@ canhazgpu release
 ## How Manual Reservations Work
 
 ### Allocation Process
-1. **Validation**: Checks actual GPU usage with nvidia-smi
+1. **Validation**: Checks actual device usage with the configured provider
 2. **Conflict Detection**: Excludes GPUs in unreserved use
 3. **LRU Selection**: Chooses least recently used GPUs
 4. **Time-based Expiry**: Sets expiration time based on duration
@@ -212,8 +218,11 @@ Reserved 2 GPU(s): [1, 3] for 4h 0m 0s
  1   │ ● IN_USE  │ alice │ 30s      │ MANUAL │ expires in 3h 59m │ no usage detected │ -    │ 0%
  3   │ ● IN_USE  │ alice │ 30s      │ MANUAL │ expires in 3h 59m │ no usage detected │ -    │ 0%
 
-# Manually set CUDA_VISIBLE_DEVICES
+# Manually set the NVIDIA/AMD visibility variable
 export CUDA_VISIBLE_DEVICES=1,3
+
+# On Huawei Ascend, use the CANN visibility variable instead
+export ASCEND_RT_VISIBLE_DEVICES=1,3
 python your_script.py
 ```
 
@@ -314,13 +323,14 @@ canhazgpu release                         # Clean up immediately
 
 ### Shell Scripts
 
-The `--short` flag outputs only the GPU IDs, making it easy to set `CUDA_VISIBLE_DEVICES` in scripts:
+The `--short` flag outputs only device IDs. Set the variable for the configured
+provider in scripts:
 
 ```bash
 #!/bin/bash
 set -e
 
-# Reserve GPUs and set environment variable in one step
+# Reserve NVIDIA/AMD GPUs and set the environment variable in one step
 export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --duration 3h --short)
 
 echo "Using GPUs: $CUDA_VISIBLE_DEVICES"
@@ -344,7 +354,7 @@ import subprocess
 import os
 
 def reserve_gpus(count=1, duration="2h"):
-    """Reserve GPUs and set CUDA_VISIBLE_DEVICES"""
+    """Reserve NVIDIA/AMD GPUs and set CUDA_VISIBLE_DEVICES."""
     result = subprocess.run([
         "canhazgpu", "reserve",
         "--gpus", str(count),

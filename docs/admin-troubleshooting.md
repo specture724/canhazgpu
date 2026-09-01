@@ -93,6 +93,8 @@ redis-cli get "canhazgpu:provider"
 canhazgpu admin --gpus 8 --provider nvidia --force
 # OR
 canhazgpu admin --gpus 8 --provider amd --force
+# OR
+canhazgpu admin --gpus 8 --provider ascend --force
 
 # Let system auto-detect
 canhazgpu admin --gpus 8 --force
@@ -110,6 +112,43 @@ canhazgpu admin --gpus 4 --provider nvidia
 
 # Use AMD provider for AMD GPUs  
 canhazgpu admin --gpus 2 --provider amd
+
+# Use Huawei Ascend provider for Ascend NPUs
+canhazgpu admin --gpus 8 --provider ascend
+```
+
+## Huawei Ascend NPU Issues
+
+### npu-smi Permission Denied
+
+**Symptoms:**
+```bash
+❯ npu-smi info
+DrvMngGetConsoleLogLevel failed. (ret=4)
+dcmi module initialize failed. ret is -8005
+```
+
+**Cause:** The account cannot read the Ascend device nodes. On typical CANN
+installations the nodes are owned by the configured runtime group, commonly
+`HwHiAiUser`.
+
+**Solution:** An administrator must add the account to that group, then the
+user must start a completely new login session:
+
+```bash
+sudo usermod -aG HwHiAiUser <username>
+
+# After logging out and back in
+id -nG
+npu-smi info
+```
+
+Read `/etc/ascend_install.info` to confirm the site's `UserGroup`; do not
+assume `HwHiAiUser` if the installation uses a different group. Once
+`npu-smi info` succeeds for the user, initialize the pool with:
+
+```bash
+canhazgpu admin --gpus 8 --provider ascend
 ```
 
 ## NVIDIA GPU Issues

@@ -385,8 +385,8 @@ type GPUStatusInfo struct {
 	ProcessInfo        string
 	Error              string
 	ModelInfo          *ModelInfo    `json:"model_info,omitempty"` // Detected AI model information
-	Provider           string        `json:"provider,omitempty"`   // GPU provider (e.g., "NVIDIA", "AMD")
-	GPUModel           string        `json:"gpu_model,omitempty"`  // GPU model (e.g., "H100", "RTX 4090")
+	Provider           string        `json:"provider,omitempty"`   // Accelerator provider (e.g., "NVIDIA", "AMD", "Ascend")
+	GPUModel           string        `json:"gpu_model,omitempty"`  // Device model (e.g., "H100", "MI300X", "910B1")
 	Note               string        `json:"note,omitempty"`       // Optional note describing the reservation purpose
 	IdleTimeout        time.Duration `json:"idle_timeout,omitempty"`
 	IdleFor            time.Duration `json:"idle_for,omitempty"` // How long the reservation has been without GPU usage

@@ -73,7 +73,7 @@ func TestAllocationEngine_GetGPUStatus_Structure(t *testing.T) {
 	}
 
 	if !isAnyGPUProviderAvailable() {
-		t.Skip("Skipping test: no GPU providers available (nvidia-smi, amd-smi not found)")
+		t.Skip("Skipping test: no GPU providers available (nvidia-smi, amd-smi, npu-smi unavailable)")
 	}
 
 	t.Log("Starting integration test - this may take time if Redis is not available")
@@ -112,7 +112,7 @@ func TestAllocationEngine_AllocateGPUs_Structure(t *testing.T) {
 	}
 
 	if !isAnyGPUProviderAvailable() {
-		t.Skip("Skipping test: no GPU providers available (nvidia-smi, amd-smi not found)")
+		t.Skip("Skipping test: no GPU providers available (nvidia-smi, amd-smi, npu-smi unavailable)")
 	}
 
 	t.Log("Starting GPU allocation integration test - may take 10+ seconds")

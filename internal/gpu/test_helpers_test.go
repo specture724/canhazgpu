@@ -19,9 +19,15 @@ func isAmdSmiAvailable() bool {
 	return err == nil
 }
 
+// isAscendSmiAvailable checks that npu-smi can query the devices for the
+// current user, rather than merely checking that its binary is on PATH.
+func isAscendSmiAvailable() bool {
+	return NewAscendProvider().IsAvailable()
+}
+
 // isAnyGPUProviderAvailable checks if any GPU provider is available
 func isAnyGPUProviderAvailable() bool {
-	return isNvidiaSmiAvailable() || isAmdSmiAvailable()
+	return isNvidiaSmiAvailable() || isAmdSmiAvailable() || isAscendSmiAvailable()
 }
 
 // TestIsNvidiaSmiAvailable tests the helper function itself
@@ -40,4 +46,9 @@ func TestIsAmdSmiAvailable(t *testing.T) {
 
 	// This test just documents the current state, doesn't assert a specific value
 	// since it depends on the test environment
+}
+
+func TestIsAscendSmiAvailable(t *testing.T) {
+	available := isAscendSmiAvailable()
+	t.Logf("npu-smi availability: %v", available)
 }

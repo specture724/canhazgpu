@@ -107,7 +107,7 @@ For programmatic integration, use the `--json` or `-j` flag to get structured JS
 | `unreserved_users` | array | List of users with unreserved processes |
 | `process_info` | string | Process details for unreserved usage, including how long each process has been running |
 | `processes` | array | Processes currently using the GPU. Default: `pid` + `elapsed_seconds`; `process_name` is included with `-v` (max 2) or `-vv` (all) |
-| `utilization_percent` | integer | GPU utilization reported by the provider (0-100, e.g. nvidia-smi `utilization.gpu`) |
+| `utilization_percent` | integer | Device utilization reported by the provider (0-100, e.g. NVIDIA `utilization.gpu` or Ascend `AICore(%)`) |
 | `idle_timeout` | string | Idle timeout of a manual reservation (e.g. `15m`) |
 | `idle_for` | string | How long the holder has not used the GPU |
 | `booking_id` | string | Scheduled booking that created this reservation |
@@ -116,7 +116,7 @@ For programmatic integration, use the `--json` or `-j` flag to get structured JS
 | `foreign_memory_mb` | integer | Memory those processes hold |
 | `error` | string | Error message (for ERROR status) |
 
-The last column, **UTIL**, is the GPU utilization percentage reported by the provider (nvidia-smi `utilization.gpu` for NVIDIA; best-effort for AMD), from 0 to 100%.
+The last column, **UTIL**, is the device utilization percentage reported by the provider (NVIDIA `utilization.gpu`, AMD best effort, or Ascend `AICore(%)`), from 0 to 100%.
 
 ## Status Information Explained
 

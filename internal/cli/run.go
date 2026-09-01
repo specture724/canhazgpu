@@ -31,12 +31,12 @@ func (e *ExitCodeError) Error() string {
 
 var runCmd = &cobra.Command{
 	Use:   "run",
-	Short: "Reserve GPUs and run a command with CUDA_VISIBLE_DEVICES set",
-	Long: `Reserve GPUs and run a command with CUDA_VISIBLE_DEVICES automatically set.
+	Short: "Reserve GPUs and run a command with device visibility set",
+	Long: `Reserve GPUs and run a command with the provider device visibility variable automatically set.
 
 The command will:
 1. Reserve the requested number of GPUs (or specific GPU IDs)
-2. Set CUDA_VISIBLE_DEVICES to the allocated GPU IDs
+2. Set CUDA_VISIBLE_DEVICES (NVIDIA/AMD) or ASCEND_RT_VISIBLE_DEVICES (Ascend) to the allocated device IDs
 3. Run your command with full interactive terminal support
 4. Automatically release GPUs when the command finishes
 5. Maintain a heartbeat while running to keep the reservation active
@@ -198,6 +198,11 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 		_ = client.Close()
 		return fmt.Errorf("failed to connect to Redis: %v", err)
 	}
+	providerName, err := client.GetAvailableProvider(ctx)
+	if err != nil {
+		_ = client.Close()
+		return fmt.Errorf("failed to get cached provider information: %v", err)
+	}
 
 	// Create allocation engine
 	engine := gpu.NewAllocationEngine(client, config)
@@ -308,14 +313,8 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 		return fmt.Errorf("command not found: %s", command[0])
 	}
 
-	// Set up environment with CUDA_VISIBLE_DEVICES, replacing any existing value
-	var env []string
-	for _, e := range os.Environ() {
-		if !strings.HasPrefix(e, "CUDA_VISIBLE_DEVICES=") {
-			env = append(env, e)
-		}
-	}
-	env = append(env, fmt.Sprintf("CUDA_VISIBLE_DEVICES=%s", gpuListStr))
+	// Set the provider-specific visibility variable, replacing only its existing value.
+	env := withVisibleDevicesEnv(os.Environ(), providerName, gpuListStr)
 
 	// Exec the user's command - this replaces the current process
 	// The supervisor will continue running and monitor our PID
@@ -328,6 +327,18 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 		_ = supervisorCmd.Process.Kill()
 	}
 	return fmt.Errorf("failed to exec command: %v", err)
+}
+
+func withVisibleDevicesEnv(environment []string, providerName string, deviceIDs string) []string {
+	variable := gpu.VisibleDevicesEnvVar(providerName)
+	prefix := variable + "="
+	env := make([]string, 0, len(environment)+1)
+	for _, entry := range environment {
+		if !strings.HasPrefix(entry, prefix) {
+			env = append(env, entry)
+		}
+	}
+	return append(env, fmt.Sprintf("%s=%s", variable, deviceIDs))
 }
 
 // buildSupervisorArgs builds the command line for the supervisor we spawn. The

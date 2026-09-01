@@ -27,9 +27,13 @@ func isAmdSmiAvailable() bool {
 	return err == nil
 }
 
+func isAscendSmiAvailable() bool {
+	return exec.Command("npu-smi", "info").Run() == nil
+}
+
 // isAnyGPUProviderAvailable checks if any GPU provider is available
 func isAnyGPUProviderAvailable() bool {
-	return isNvidiaSmiAvailable() || isAmdSmiAvailable()
+	return isNvidiaSmiAvailable() || isAmdSmiAvailable() || isAscendSmiAvailable()
 }
 
 // TestIsNvidiaSmiAvailable tests the helper function itself
@@ -48,6 +52,11 @@ func TestIsAmdSmiAvailable(t *testing.T) {
 
 	// This test just documents the current state, doesn't assert a specific value
 	// since it depends on the test environment
+}
+
+func TestIsAscendSmiAvailable(t *testing.T) {
+	available := isAscendSmiAvailable()
+	t.Logf("npu-smi availability: %v", available)
 }
 
 func TestRunCommand_FailureCleanup(t *testing.T) {
@@ -138,7 +147,7 @@ func TestRunCommand_Structure(t *testing.T) {
 
 func TestRunRun_Validation(t *testing.T) {
 	if !isAnyGPUProviderAvailable() {
-		t.Skip("Skipping test: no GPU providers available (nvidia-smi, amd-smi not found)")
+		t.Skip("Skipping test: no GPU providers available (nvidia-smi, amd-smi, npu-smi unavailable)")
 	}
 
 	tests := []struct {

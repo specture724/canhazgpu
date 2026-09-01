@@ -13,7 +13,7 @@ Commands:
   release     Release manually reserved GPUs held by the current user
   report      Generate GPU usage reports
   reserve     Reserve GPUs manually for a specified duration
-  run         Reserve GPUs and run a command with CUDA_VISIBLE_DEVICES set
+  run         Reserve GPUs and run a command with device visibility set
   schedule    Show the GPU booking schedule for a day
   status      Show current GPU allocation status
   violations  Show GPU usage that bypassed the reservation system
@@ -103,7 +103,7 @@ canhazgpu admin --gpus <count> [--force] [--provider <type>]
 **Options:**
 - `--gpus`: Number of GPUs available on this machine (required)
 - `--force`: Force reinitialization even if already initialized
-- `--provider`: GPU provider type (`nvidia`, `amd`, or `fake`). Auto-detected if not specified.
+- `--provider`: Device provider type (`nvidia`, `amd`, `ascend`, or `fake`). Auto-detected if not specified.
 
 **Examples:**
 ```bash
@@ -116,6 +116,9 @@ canhazgpu admin --gpus 8 --provider nvidia
 # Use AMD GPUs
 canhazgpu admin --gpus 4 --provider amd
 
+# Use Huawei Ascend NPUs
+canhazgpu admin --gpus 8 --provider ascend
+
 # Use fake provider for development/testing (no real GPUs required)
 canhazgpu admin --gpus 4 --provider fake
 
@@ -125,7 +128,7 @@ canhazgpu admin --gpus 4 --force
 
 !!! tip "Fake Provider for Development"
     Use `--provider fake` to develop and test canhazgpu on systems without actual GPUs.
-    The fake provider simulates GPU behavior without requiring nvidia-smi or amd-smi.
+    The fake provider simulates GPU behavior without requiring nvidia-smi, amd-smi, or npu-smi.
 
 !!! warning "Destructive Operation"
     Using `--force` will clear all existing reservations. Use with caution in production.
@@ -305,11 +308,11 @@ canhazgpu run --wait 30m --gpus 4 -- python train.py
 ```
 
 **Behavior:**
-1. Validates actual GPU availability using nvidia-smi
+1. Validates actual device availability using the configured provider
 2. Excludes GPUs that are in use without reservation
 3. If GPUs unavailable, waits in queue (unless `--nonblock` is set)
 4. Reserves the requested number of GPUs using MRU-per-user allocation (with LRU fallback)
-5. Sets `CUDA_VISIBLE_DEVICES` to the allocated GPU IDs
+5. Sets `CUDA_VISIBLE_DEVICES` for NVIDIA/AMD or `ASCEND_RT_VISIBLE_DEVICES` for Ascend to the allocated device IDs
 6. Runs your command
 7. Automatically releases GPUs when the command finishes
 8. Maintains a heartbeat while running to keep the reservation active
@@ -398,9 +401,13 @@ canhazgpu reserve --start 14:00 --end 16:00 --gpus 2
 ```
 
 **Important Note:**
-Unlike the `run` command, `reserve` does NOT automatically set `CUDA_VISIBLE_DEVICES`. You can use `--short` for easy shell integration:
+Unlike the `run` command, `reserve` does NOT automatically set the provider visibility variable. You can use `--short` for easy shell integration:
 ```bash
+# NVIDIA or AMD
 export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --short)
+
+# Huawei Ascend
+export ASCEND_RT_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --short)
 ```
 
 **Use Cases:**
@@ -822,7 +829,7 @@ When no remote hosts are configured, the dashboard shows the traditional single-
 
 All allocation commands (`run` and `reserve`) automatically:
 
-1. **Scan for unreserved usage** using nvidia-smi
+1. **Scan for unreserved usage** using the configured provider
 2. **Exclude unreserved GPUs** from the available pool
 3. **Hold back GPUs needed by scheduled bookings** during the window the reservation would cover
 4. **Provide detailed error messages** if insufficient GPUs remain

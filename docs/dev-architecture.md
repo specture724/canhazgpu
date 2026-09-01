@@ -407,11 +407,12 @@ Current MRU-per-user allocation could be enhanced with:
 
 ### 2. GPU Provider System
 
-The system supports multiple GPU providers through a unified interface:
+The system supports multiple accelerator providers through a unified interface:
 
 **Available Providers:**
 - **NVIDIA**: Uses nvidia-smi for NVIDIA GPU management
 - **AMD**: Uses amd-smi (ROCm 5.7+) for AMD GPU management
+- **Huawei Ascend**: Uses npu-smi and CANN logical device IDs
 - **Fake**: Simulated provider for development and testing without real GPUs
 
 **Provider Architecture:**

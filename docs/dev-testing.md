@@ -23,7 +23,7 @@ This guide explains how to run tests for canhazgpu and understand the testing in
 #### Integration Tests (Slower)
 - Run with: `make test` or `make test-integration`
 - Duration: 5-30 seconds per test
-- Dependencies: Redis server, nvidia-smi (optional)
+- Dependencies: Redis server and a supported provider tool (`nvidia-smi`, `amd-smi`, or `npu-smi`; optional)
 - Tests real system interactions
 
 ## Running Tests
@@ -72,8 +72,8 @@ When running full tests (`make test`), these tests may take time:
 
 2. **GPU Validation Tests** (5-10 seconds)
    - `TestDetectGPUUsage_Integration` 
-   - Calls nvidia-smi command
-   - Logs: Indicates nvidia-smi availability
+   - Calls the available provider tool
+   - Logs: Indicates provider availability
 
 3. **Heartbeat Manager Tests** (1-3 seconds)
    - `TestHeartbeatManager_Wait`
@@ -83,7 +83,7 @@ When running full tests (`make test`), these tests may take time:
 
 4. **GPU Allocation Tests** (2-10 seconds)
    - `TestAllocationEngine_AllocateGPUs_Structure`
-   - Combines Redis + nvidia-smi validation
+   - Combines Redis + provider validation
    - Logs: Indicates each phase
 
 ### Test Logging
@@ -107,8 +107,8 @@ Integration tests include verbose logging to explain timing:
    - Tests automatically skip if unavailable
    - Uses database 15 (test database)
 
-2. **nvidia-smi** (optional)
-   - Used for GPU detection tests
+2. **Provider tool** (optional)
+   - `nvidia-smi`, `amd-smi`, or `npu-smi` is used for device detection tests
    - Tests gracefully handle missing command
    - Expected to fail on non-GPU systems
 
@@ -126,7 +126,7 @@ SKIP: Redis not available for testing: dial tcp :6379: connect: connection refus
 ```
 **Solution**: Start Redis server or run `make test-short`
 
-### nvidia-smi Not Found
+### Provider Tool Not Found
 ```
 nvidia-smi not available or failed: exec: "nvidia-smi": executable file not found
 ```

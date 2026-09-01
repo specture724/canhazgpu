@@ -18,7 +18,7 @@ canhazgpu status -vv   # 显示所有进程
 canhazgpu run --gpus 1 -- python train.py
 ```
 
-`run` 会自动预约 GPU、设置 `CUDA_VISIBLE_DEVICES`、跑完自动释放。注意 `--` 必须写，它分隔 canhazgpu 的参数和你的命令。
+`run` 会自动预约设备、为 NVIDIA/AMD 设置 `CUDA_VISIBLE_DEVICES` 或为 Ascend 设置 `ASCEND_RT_VISIBLE_DEVICES`、跑完自动释放。注意 `--` 必须写，它分隔 canhazgpu 的参数和你的命令。
 
 常用选项：
 
@@ -56,6 +56,9 @@ canhazgpu cancel 45b590f7  # 排队中的直接出队；跑着的会被 SIGTERM�
 ```bash
 # 预约 1 张 GPU 4 小时，并把卡号写进环境变量
 export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 1 --duration 4h --short)
+
+# 华为 Ascend
+export ASCEND_RT_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 1 --duration 4h --short)
 
 jupyter notebook
 ```

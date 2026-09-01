@@ -33,7 +33,7 @@ Use --force to reinitialize an existing pool (this will clear all reservations).
 func init() {
 	adminCmd.Flags().IntP("gpus", "g", 0, "Number of GPUs available on this machine (required)")
 	adminCmd.Flags().Bool("force", false, "Force reinitialization even if already initialized")
-	adminCmd.Flags().StringP("provider", "p", "", "GPU provider to use (nvidia, amd, or fake). If not specified, auto-detect available provider. Use 'fake' for development/testing without real GPUs")
+	adminCmd.Flags().StringP("provider", "p", "", "GPU provider to use (nvidia, amd, ascend, or fake). If not specified, auto-detect available provider. Use 'fake' for development/testing without real GPUs")
 	if err := adminCmd.MarkFlagRequired("gpus"); err != nil {
 		// This should not happen in practice, but handle it
 		panic(fmt.Sprintf("Failed to mark gpus flag as required: %v", err))
@@ -59,18 +59,15 @@ func runAdmin(ctx context.Context, gpuCount int, force bool, explicitProvider st
 	// Determine which provider to use
 	var providerName string
 	if explicitProvider != "" {
-		// Use explicitly specified provider
-		fmt.Printf("Using explicitly specified GPU provider: %s\n", explicitProvider)
-
-		// Validate provider name
-		if explicitProvider != "nvidia" && explicitProvider != "amd" && explicitProvider != "fake" {
-			return fmt.Errorf("invalid provider '%s'. Valid providers are: nvidia, amd, fake", explicitProvider)
+		providerName = gpu.CanonicalProviderName(explicitProvider)
+		if providerName == "" {
+			return fmt.Errorf("invalid provider '%s'. Valid providers are: nvidia, amd, ascend, fake", explicitProvider)
 		}
+		fmt.Printf("Using explicitly specified GPU provider: %s\n", providerName)
 
 		// For fake provider, skip availability check
-		if explicitProvider == "fake" {
+		if providerName == "fake" {
 			fmt.Println("Using fake GPU provider for development/testing")
-			providerName = explicitProvider
 		} else {
 			// Validate that the specified provider is available
 			pm := gpu.NewProviderManager()
@@ -78,17 +75,18 @@ func runAdmin(ctx context.Context, gpuCount int, force bool, explicitProvider st
 
 			available := false
 			for _, provider := range availableProviders {
-				if provider.Name() == explicitProvider {
+				if provider.Name() == providerName {
 					available = true
 					break
 				}
 			}
 
 			if !available {
-				return fmt.Errorf("provider '%s' is not available on this system", explicitProvider)
+				if providerName == gpu.AscendProviderName {
+					return fmt.Errorf("provider '%s' is not available on this system; ensure the current user can run 'npu-smi info'", providerName)
+				}
+				return fmt.Errorf("provider '%s' is not available on this system", providerName)
 			}
-
-			providerName = explicitProvider
 		}
 	} else {
 		// Auto-detect available provider
@@ -97,7 +95,7 @@ func runAdmin(ctx context.Context, gpuCount int, force bool, explicitProvider st
 		availableProviders := pm.GetAvailableProviders()
 
 		if len(availableProviders) == 0 {
-			return fmt.Errorf("no GPU providers available (nvidia-smi, amd-smi not found)")
+			return fmt.Errorf("no GPU providers available (nvidia-smi, amd-smi, or npu-smi unavailable)")
 		}
 
 		if len(availableProviders) > 1 {
