@@ -15,6 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// cliTestRedisDB is isolated from Redis-backed tests in other Go packages.
+const cliTestRedisDB = 13
+
 // isNvidiaSmiAvailable checks if nvidia-smi command is available
 func isNvidiaSmiAvailable() bool {
 	_, err := exec.LookPath("nvidia-smi")
@@ -70,7 +73,7 @@ func TestRunCommand_FailureCleanup(t *testing.T) {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15, // Test database
+		RedisDB:   cliTestRedisDB,
 	}
 	client := redis_client.NewClient(config)
 
@@ -145,45 +148,47 @@ func TestRunCommand_Structure(t *testing.T) {
 	assert.Equal(t, "", timeoutFlag.DefValue)
 }
 
-func TestRunRun_Validation(t *testing.T) {
-	if !isAnyGPUProviderAvailable() {
-		t.Skip("Skipping test: no GPU providers available (nvidia-smi, amd-smi, npu-smi unavailable)")
-	}
-
+func TestNormalizeRunGPUCount(t *testing.T) {
 	tests := []struct {
 		name     string
 		gpuCount int
-		command  []string
-		wantErr  bool
+		gpuIDs   []int
+		want     int
 	}{
 		{
-			name:     "Zero GPU count (defaults to 1)",
+			name:     "zero count defaults to one GPU",
 			gpuCount: 0,
-			command:  []string{"echo", "test"},
-			wantErr:  false,
+			want:     1,
 		},
 		{
-			name:     "Negative GPU count",
-			gpuCount: -1,
-			command:  []string{"echo", "test"},
-			wantErr:  true,
+			name:     "specific IDs leave count unchanged",
+			gpuCount: 0,
+			gpuIDs:   []int{1, 3},
+			want:     0,
+		},
+		{
+			name:     "explicit count is preserved",
+			gpuCount: 2,
+			want:     2,
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			err := runRun(ctx, tt.gpuCount, nil, "", "0", "", "", true, "", tt.command)
-
-			if tt.wantErr {
-				assert.Error(t, err)
-			} else {
-				assert.NoError(t, err)
-			}
+			assert.Equal(t, tt.want, normalizeRunGPUCount(tt.gpuCount, tt.gpuIDs))
 		})
 	}
+}
+
+func TestRunRequestRejectsNegativeGPUCount(t *testing.T) {
+	request := &types.AllocationRequest{
+		GPUCount:        normalizeRunGPUCount(-1, nil),
+		User:            "testuser",
+		ActualUser:      "testuser",
+		ReservationType: types.ReservationTypeRun,
+	}
+
+	assert.Error(t, request.Validate())
 }
 
 func TestExitCodeHandling(t *testing.T) {
@@ -223,7 +228,7 @@ func TestRunCommand_HeartbeatCleanup_Integration(t *testing.T) {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15,
+		RedisDB:   cliTestRedisDB,
 	}
 	client := redis_client.NewClient(config)
 

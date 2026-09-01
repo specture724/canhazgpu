@@ -5,6 +5,10 @@ import (
 	"testing"
 )
 
+// gpuTestRedisDB is dedicated to Redis-backed tests in this package. Go runs
+// packages concurrently, so it must not overlap with another package's test DB.
+const gpuTestRedisDB = 14
+
 // isNvidiaSmiAvailable checks if nvidia-smi command is available
 // This is used by tests to skip tests that require nvidia-smi when it's not present
 func isNvidiaSmiAvailable() bool {

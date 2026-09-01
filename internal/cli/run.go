@@ -160,10 +160,7 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 		timeoutStr = ""
 	}
 
-	// If neither is specified, default to 1 GPU
-	if gpuCount == 0 && len(gpuIDs) == 0 {
-		gpuCount = 1
-	}
+	gpuCount = normalizeRunGPUCount(gpuCount, gpuIDs)
 
 	config := getConfig()
 
@@ -327,6 +324,16 @@ func runRun(ctx context.Context, gpuCount int, gpuIDs []int, timeoutStr string, 
 		_ = supervisorCmd.Process.Kill()
 	}
 	return fmt.Errorf("failed to exec command: %v", err)
+}
+
+// normalizeRunGPUCount applies the CLI default without changing a request for
+// specific device IDs. Keeping this separate makes the behavior testable
+// without invoking the exec-based run path.
+func normalizeRunGPUCount(gpuCount int, gpuIDs []int) int {
+	if gpuCount == 0 && len(gpuIDs) == 0 {
+		return 1
+	}
+	return gpuCount
 }
 
 func withVisibleDevicesEnv(environment []string, providerName string, deviceIDs string) []string {

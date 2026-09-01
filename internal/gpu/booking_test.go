@@ -182,15 +182,14 @@ func TestBookingShortIDAndStatus(t *testing.T) {
 // setupBookingTestEngine creates an allocation engine backed by a Redis test
 // database with a fake GPU pool of the requested size.
 //
-// DB 14 is used rather than the usual DB 15 because these tests clear the state
-// they touch, while other tests in this package rely on state left behind in
-// DB 15. Only canhazgpu keys are removed - never the whole database - so
-// pointing these tests at a shared Redis cannot destroy unrelated data.
+// The gpu package uses a dedicated database because tests in other packages
+// run concurrently. Only canhazgpu keys are removed here, never unrelated
+// keys that may share this database.
 func setupBookingTestEngine(t *testing.T, gpuCount int) (*AllocationEngine, *redis_client.Client, context.Context) {
 	config := &types.Config{
 		RedisHost:       "localhost",
 		RedisPort:       6379,
-		RedisDB:         14,
+		RedisDB:         gpuTestRedisDB,
 		MemoryThreshold: types.MemoryThresholdMB,
 	}
 
