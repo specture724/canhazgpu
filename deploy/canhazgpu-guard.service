@@ -1,0 +1,14 @@
+[Unit]
+Description=canhazgpu accelerator reservation guard
+Wants=network-online.target redis.service
+After=network-online.target redis.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/canhazgpu guard --interval 15s
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
