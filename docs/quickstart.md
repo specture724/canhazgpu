@@ -83,7 +83,7 @@ Common options:
 | `--nonblock` | Fail immediately if GPUs are not available |
 | `--note "..."` | Label the reservation; shows up in `status` |
 
-If GPUs are busy, `run` waits in a first-come-first-served queue by default and prints progress. Ctrl+C while waiting removes your queue entry.
+If GPUs are busy, `run` waits in a first-come-first-served queue by default and prints progress. When your turn comes after waiting, the terminal is notified (desktop toast via OSC 777/9 when supported, otherwise a bell). Immediate allocations do not notify. Ctrl+C while waiting removes your queue entry.
 
 ```bash
 canhazgpu queue                # see who is waiting
