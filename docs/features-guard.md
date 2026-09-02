@@ -88,7 +88,7 @@ Safety rails:
 - **Escalation ladder**: SIGINT → SIGTERM → SIGKILL, `--kill-grace` apart, so a job gets the chance to shut down cleanly
 - **Circuit breaker**: at most `--max-kills-per-hour` terminations (default 3); beyond that the guard only warns, since a storm of kills is more likely a bug than a room full of offenders
 - **Unknown owners are never terminated**: if the process owner cannot be determined it might be a system process
-- **Allow lists**: `--exclude-users` (default `root`) and `--exclude-commands` (default `Xorg,nvidia-smi,amd-smi,dcgm-exporter,nvidia-persistenced`)
+- **Allow lists**: `--exclude-users` (default `root`) and `--exclude-commands` (default `Xorg,nvidia-smi,amd-smi,npu-smi,dcgm-exporter,nvidia-persistenced`)
 - **Dry run**: `--dry-run` records what would have happened, including in `canhazgpu violations`
 
 ## Avoiding false positives

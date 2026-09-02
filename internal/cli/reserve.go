@@ -69,9 +69,10 @@ Time formats supported by --start and --end:
 - +2h (relative to now)
 
 IMPORTANT: Unlike 'canhazgpu run', this command does NOT automatically set
-CUDA_VISIBLE_DEVICES. After reserving, you must manually set the environment
-variable based on the GPU IDs shown in the output:
-  export CUDA_VISIBLE_DEVICES=1,3
+the device visibility variable. After reserving, manually set the variable
+for your provider based on the device IDs shown in the output:
+  export CUDA_VISIBLE_DEVICES=1,3       # NVIDIA or AMD
+  export ASCEND_RT_VISIBLE_DEVICES=1,3  # Ascend
 
 Example usage:
   canhazgpu reserve --gpus 2 --duration 4h
@@ -82,7 +83,7 @@ Example usage:
   canhazgpu reserve --wait 30m --gpus 4 --duration 2h  # Wait up to 30 minutes
   canhazgpu reserve --start 14:00 --end 16:00 --gpus 2  # Book a time slot
   canhazgpu reserve --start 'tomorrow 09:00' --duration 4h --gpus 8
-  export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --short)  # For scripting
+  export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --short)  # NVIDIA or AMD scripting
 
 The reserved GPUs must be manually released with 'canhazgpu release' or will
 automatically expire after the specified duration.`,
@@ -218,6 +219,11 @@ func runReserve(ctx context.Context, opts reserveOptions) error {
 	if err := client.Ping(ctx); err != nil {
 		return fmt.Errorf("failed to connect to Redis: %v", err)
 	}
+	providerName, err := client.GetAvailableProvider(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get cached provider information: %v", err)
+	}
+	visibleDevicesEnv := gpu.VisibleDevicesEnvVar(providerName)
 
 	// Create allocation engine
 	engine := gpu.NewAllocationEngine(client, config)
@@ -258,7 +264,7 @@ func runReserve(ctx context.Context, opts reserveOptions) error {
 	// Sort GPU IDs for consistent ordering in output and environment variable
 	sort.Ints(allocatedGPUs)
 
-	// Build list for CUDA_VISIBLE_DEVICES
+	// Build the allocated device ID list for the provider visibility variable.
 	ids := make([]string, len(allocatedGPUs))
 	for i, id := range allocatedGPUs {
 		ids[i] = strconv.Itoa(id)
@@ -279,7 +285,8 @@ func runReserve(ctx context.Context, opts reserveOptions) error {
 	}
 
 	fmt.Printf(
-		"\nRun the following command to run only on these GPUs:\nexport CUDA_VISIBLE_DEVICES=%s\n",
+		"\nRun the following command to run only on these GPUs:\nexport %s=%s\n",
+		visibleDevicesEnv,
 		strings.Join(ids, ","),
 	)
 

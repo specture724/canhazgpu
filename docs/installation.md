@@ -7,6 +7,7 @@
 - **GPUs** with appropriate management tools:
   - **NVIDIA GPUs**: nvidia-smi available
   - **AMD GPUs**: amd-smi available (ROCm 5.7+)
+  - **Huawei Ascend NPUs** (including 910B1): npu-smi available and the CANN runtime configured for the user
 - **System access** to `/proc` filesystem or `ps` command for user detection
 
 ## Dependencies
@@ -70,6 +71,28 @@ amd-smi list
 ```
 
 If not installed, install ROCm drivers for your system:
+
+### Huawei Ascend NPUs
+
+Ensure the CANN runtime can query the devices for the same account that will
+run canhazgpu:
+
+```bash
+npu-smi info
+# Should display the NPU table and process table
+```
+
+On installations that restrict access to the CANN runtime group, an
+administrator must add each user to the configured group. For the common
+default group this is:
+
+```bash
+sudo usermod -aG HwHiAiUser <username>
+```
+
+The user must fully log out and start a new login session before the group is
+effective. Verify with `id -nG` and then rerun `npu-smi info`. Check
+`/etc/ascend_install.info` for a site-specific `UserGroup` value.
 
 ## Install canhazgpu
 
@@ -184,6 +207,8 @@ canhazgpu run --gpus 1 -- nvidia-smi --<TAB>  # For NVIDIA
 # Shows nvidia-smi options
 canhazgpu run --gpus 1 -- amd-smi --<TAB>     # For AMD
 # Shows amd-smi options
+canhazgpu run --gpus 1 -- npu-smi --<TAB>     # For Huawei Ascend
+# Shows npu-smi options
 ```
 
 ### Manual Installation

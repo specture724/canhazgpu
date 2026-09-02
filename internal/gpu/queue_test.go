@@ -16,7 +16,7 @@ func setupQueueTestRedis(t *testing.T) *redis_client.Client {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15, // Use test database
+		RedisDB:   gpuTestRedisDB,
 	}
 
 	client := redis_client.NewClient(config)
@@ -376,7 +376,7 @@ func TestQueueAllocatesFirstFullySatisfiableEntry(t *testing.T) {
 	config := &types.Config{
 		RedisHost:       "localhost",
 		RedisPort:       6379,
-		RedisDB:         15,
+		RedisDB:         gpuTestRedisDB,
 		MemoryThreshold: 100,
 	}
 	engine := NewAllocationEngine(client, config)
@@ -473,7 +473,7 @@ func TestQueueStatus(t *testing.T) {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15,
+		RedisDB:   gpuTestRedisDB,
 	}
 	engine := NewAllocationEngine(client, config)
 

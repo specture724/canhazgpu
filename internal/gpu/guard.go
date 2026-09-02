@@ -62,7 +62,7 @@ func DefaultGuardConfig() GuardConfig {
 		KillGrace:       types.DefaultGuardKillGrace,
 		MaxKillsPerHour: types.DefaultGuardMaxKillsPerHour,
 		ExcludeUsers:    []string{"root"},
-		ExcludeCommands: []string{"Xorg", "nvidia-smi", "amd-smi", "dcgm-exporter", "nvidia-persistenced"},
+		ExcludeCommands: []string{"Xorg", "nvidia-smi", "amd-smi", "npu-smi", "dcgm-exporter", "nvidia-persistenced"},
 		Maintenance:     true,
 		NotifyHolder:    true,
 	}

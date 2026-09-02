@@ -51,7 +51,7 @@ guard:
   channels: ["process", "tty", "log"]
   log-file: ""
   exclude-users: ["root"]
-  exclude-commands: ["Xorg", "nvidia-smi", "amd-smi", "dcgm-exporter", "nvidia-persistenced"]
+  exclude-commands: ["Xorg", "nvidia-smi", "amd-smi", "npu-smi", "dcgm-exporter", "nvidia-persistenced"]
   notify-holder: true
 
 # Default settings for 'run' command

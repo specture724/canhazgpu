@@ -10,7 +10,7 @@ In shared development environments with multiple GPUs, researchers and developer
 
 You peacefully share a host but want a helper to avoid accidental conflicts.
 
-- You have a single host with GPUs (NVIDIA or AMD) shared by multiple users
+- You have a single host with NVIDIA GPUs, AMD GPUs, or Huawei Ascend NPUs shared by multiple users
 - You all log in and run commands manually for development and/or testing
 - You can still talk to each other about playing nice and sharing your GPUs
 
@@ -35,7 +35,8 @@ canhazgpu admin --gpus 8
 canhazgpu status
 
 # Run vLLM with an automatic 2 GPU reservation.
-# - CUDA_VISIBLE_DEVICES is set in the environment before running the command.
+# - The provider visibility variable is set before running the command
+#   (CUDA_VISIBLE_DEVICES for NVIDIA/AMD; ASCEND_RT_VISIBLE_DEVICES for Ascend).
 # - If GPUs are unavailable, waits in queue until they become available.
 canhazgpu run --gpus 2 -- vllm serve my/model --tensor-parallel-size 2
 
@@ -61,8 +62,11 @@ canhazgpu reserve --gpus 1 --duration 4h
 # Reserve specific GPU IDs manually
 canhazgpu reserve --gpu-ids 0,2 --duration 2h
 
-# Reserve GPUs and set CUDA_VISIBLE_DEVICES in one step (for scripting)
+# Reserve NVIDIA/AMD GPUs and set CUDA_VISIBLE_DEVICES in one step (for scripting)
 export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --short)
+
+# For Ascend, use the CANN visibility variable instead.
+export ASCEND_RT_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --short)
 
 # Release manual reservations when done
 canhazgpu release
@@ -83,8 +87,8 @@ canhazgpu web --port 8080
 - **MRU-per-user allocation**: Smart GPU affinity using most recently used per-user strategy with LRU fallback
 - **Specific GPU reservation**: Reserve exact GPU IDs when needed (e.g., --gpu-ids 1,3)
 - **Unreserved usage detection**: Identifies GPUs in use without proper reservations
-- **Real-time validation**: Uses nvidia-smi or amd-smi to verify actual GPU usage
-- **Multi-provider support**: Supports both NVIDIA and AMD GPUs with automatic detection
+- **Real-time validation**: Uses nvidia-smi, amd-smi, or npu-smi to verify actual device usage
+- **Multi-provider support**: Supports NVIDIA, AMD, and Huawei Ascend devices with automatic detection
 - **Flexible reservations**: Support for both command execution and manual reservations
 - **Reservation reporting**: Track and analyze GPU reservation patterns over time by user
 - **Web dashboard**: Real-time monitoring interface with status and reservation reports
@@ -121,6 +125,7 @@ For detailed usage, configuration, and administration:
 - **GPUs** with appropriate management tools:
   - **NVIDIA GPUs**: nvidia-smi available
   - **AMD GPUs**: amd-smi available (ROCm 5.7+)
+  - **Huawei Ascend NPUs** (including 910B1): npu-smi available and the CANN runtime configured for the user
 - **System access** to `/proc` filesystem or `ps` command
 
 ## Installation
@@ -146,11 +151,13 @@ Then initialize the GPU pool:
 canhazgpu admin --gpus $(nvidia-smi -L | wc -l)  # For NVIDIA
 # OR
 canhazgpu admin --gpus $(amd-smi list --json | jq 'length')  # For AMD
+# OR (example: eight Ascend NPUs)
+canhazgpu admin --gpus 8 --provider ascend  # For Huawei Ascend
 ```
 
 ## How It Works
 
-1. **Validation**: Uses nvidia-smi or amd-smi to detect actual GPU usage and identify conflicts
+1. **Validation**: Uses nvidia-smi, amd-smi, or npu-smi to detect actual device usage and identify conflicts
 2. **Coordination**: Uses Redis for distributed state management and race condition prevention
 3. **Queueing**: FCFS queue; the first entry whose full request can be satisfied is allocated, so no GPUs are held by a job that cannot start yet
 4. **Allocation**: MRU-per-user (Most Recently Used per user) strategy provides GPU affinity with LRU fallback for fair distribution

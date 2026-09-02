@@ -22,6 +22,9 @@ canhazgpu admin --gpus $(nvidia-smi -L | wc -l)
 
 # AMD host
 canhazgpu admin --gpus $(amd-smi list --json | jq 'length')
+
+# Huawei Ascend host (example: eight logical NPUs)
+canhazgpu admin --gpus 8 --provider ascend
 ```
 
 Do not run this on a busy host without `--force`; it resets all reservations.
@@ -63,7 +66,7 @@ canhazgpu status --json | jq -r '.[] | select(.status == "AVAILABLE") | .gpu_id'
 
 ## 2. Run a job: `run`
 
-`run` is the recommended way to start anything GPU-heavy. It reserves GPUs, sets `CUDA_VISIBLE_DEVICES`, runs your command, and releases the GPUs when the command exits. Use the `--` separator so canhazgpu does not try to parse your command's flags:
+`run` is the recommended way to start anything accelerator-heavy. It reserves devices, sets `CUDA_VISIBLE_DEVICES` for NVIDIA/AMD or `ASCEND_RT_VISIBLE_DEVICES` for Ascend, runs your command, and releases the devices when the command exits. Use the `--` separator so canhazgpu does not try to parse your command's flags:
 
 ```bash
 canhazgpu run --gpus 1 -- python train.py
@@ -99,7 +102,7 @@ canhazgpu run --gpus 2 --timeout 12h --note "bert-finetune" -- \
 
 ## 3. Reserve for interactive work: `reserve`
 
-Use `reserve` when you need GPUs for a while without running a single command: notebooks, debugging, multi-step experiments. The reservation is **manual**: it has a duration, does not set `CUDA_VISIBLE_DEVICES` for you, and stays until it expires, goes idle, or you release it.
+Use `reserve` when you need devices for a while without running a single command: notebooks, debugging, multi-step experiments. The reservation is **manual**: it has a duration, does not set the provider visibility variable for you, and stays until it expires, goes idle, or you release it.
 
 ```bash
 # 1 GPU for 4 hours
@@ -110,6 +113,9 @@ canhazgpu reserve --gpu-ids 0,2 --duration 2h
 
 # Reserve and set the environment in one step
 export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --duration 3h --short)
+
+# Huawei Ascend
+export ASCEND_RT_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --duration 3h --short)
 
 jupyter notebook
 ```
