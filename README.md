@@ -10,6 +10,8 @@ In shared development environments with multiple GPUs, researchers and developer
 
 You peacefully share a host but want a helper to avoid accidental conflicts.
 
+For development inside Docker with a host guard, see the [Docker setup guide](docs/docker.md).
+
 - You have a single host with GPUs (NVIDIA or AMD) shared by multiple users
 - You all log in and run commands manually for development and/or testing
 - You can still talk to each other about playing nice and sharing your GPUs

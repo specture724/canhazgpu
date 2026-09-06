@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"net"
 	"time"
 
 	"github.com/go-redis/redis/v8"
+	"github.com/russellb/canhazgpu/internal/hostbridge"
 	"github.com/russellb/canhazgpu/internal/types"
 )
 
@@ -18,8 +20,9 @@ type Client struct {
 
 func NewClient(config *types.Config) *Client {
 	rdb := redis.NewClient(&redis.Options{
-		Addr: fmt.Sprintf("%s:%d", config.RedisHost, config.RedisPort),
-		DB:   config.RedisDB,
+		Dialer: bridgeDialer(config),
+		Addr:   fmt.Sprintf("%s:%d", config.RedisHost, config.RedisPort),
+		DB:     config.RedisDB,
 
 		// Connection health settings to detect and recover from stale connections.
 		// This is critical for long-lived processes like the supervisor, where a
@@ -69,8 +72,9 @@ func (c *Client) Reconnect() error {
 	_ = c.rdb.Close()
 
 	c.rdb = redis.NewClient(&redis.Options{
-		Addr: fmt.Sprintf("%s:%d", c.config.RedisHost, c.config.RedisPort),
-		DB:   c.config.RedisDB,
+		Dialer: bridgeDialer(c.config),
+		Addr:   fmt.Sprintf("%s:%d", c.config.RedisHost, c.config.RedisPort),
+		DB:     c.config.RedisDB,
 
 		DialTimeout:  5 * time.Second,
 		ReadTimeout:  5 * time.Second,
@@ -89,6 +93,15 @@ func (c *Client) Reconnect() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	return c.rdb.Ping(ctx).Err()
+}
+
+func bridgeDialer(config *types.Config) func(context.Context, string, string) (net.Conn, error) {
+	if config.HostSocket == "" {
+		return nil
+	}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return (hostbridge.Client{Socket: config.HostSocket}).RedisConn(ctx)
+	}
 }
 
 // GPU State Management

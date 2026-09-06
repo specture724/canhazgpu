@@ -3,10 +3,12 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 	"time"
 
 	"github.com/russellb/canhazgpu/internal/gpu"
+	"github.com/russellb/canhazgpu/internal/hostbridge"
 	"github.com/russellb/canhazgpu/internal/redis_client"
 	"github.com/russellb/canhazgpu/internal/types"
 	"github.com/russellb/canhazgpu/internal/utils"
@@ -69,6 +71,8 @@ Example usage:
 
 func init() {
 	defaults := gpu.DefaultGuardConfig()
+	guardCmd.Flags().String("listen", "", "Serve container clients on this Unix socket (e.g. /run/canhazgpu/host.sock)")
+	guardCmd.Flags().String("docker-owners", "", "Host JSON file mapping full Docker container IDs to host accounts")
 
 	guardCmd.Flags().String("interval", utils.FormatDurationShort(defaults.Interval), "How often to scan the GPUs")
 	guardCmd.Flags().Bool("once", false, "Run a single scan and exit (for cron)")
@@ -105,6 +109,10 @@ func runGuard(ctx context.Context) error {
 	}
 
 	config := getConfig()
+	config.ContainerOwners, err = hostbridge.LoadOwners(viper.GetString("guard.docker-owners"))
+	if err != nil {
+		return fmt.Errorf("Docker owner mappings: %w", err)
+	}
 	client := redis_client.NewClient(config)
 	defer func() {
 		if err := client.Close(); err != nil {
@@ -124,6 +132,24 @@ func runGuard(ctx context.Context) error {
 	engine := gpu.NewAllocationEngine(client, config)
 	notifier := gpu.NewMultiNotifier(viper.GetStringSlice("guard.channels"), viper.GetString("guard.log-file"))
 	guard := gpu.NewGuard(engine, client, config, settings, notifier)
+	if socket := viper.GetString("guard.listen"); socket != "" {
+		if os.Geteuid() != 0 {
+			return fmt.Errorf("the host bridge must run as root to manage container processes")
+		}
+		if viper.GetBool("guard.once") {
+			return fmt.Errorf("--listen requires a continuous guard, not --once")
+		}
+		server := &hostbridge.Server{
+			Resolver: &hostbridge.Resolver{Owners: config.ContainerOwners}, Config: config, Usage: engine.DetectUsage,
+			Cancel: func(ctx context.Context, ref, user string, force bool) (any, error) {
+				return engine.CancelTask(ctx, ref, user, force)
+			},
+		}
+		if err := server.Start(ctx, socket); err != nil {
+			return fmt.Errorf("start host bridge: %w", err)
+		}
+		defer server.Close()
+	}
 
 	if viper.GetBool("guard.once") {
 		pass, err := guard.RunOnce(ctx)

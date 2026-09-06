@@ -345,6 +345,9 @@ func buildSupervisorArgs(executable string, config *types.Config, gpuList string
 		"--redis-port", strconv.Itoa(config.RedisPort),
 		"--redis-db", strconv.Itoa(config.RedisDB),
 	}
+	if config.HostSocket != "" {
+		args = append(args, "--host-socket", config.HostSocket)
+	}
 	if timeout != "" && timeout != "0" {
 		args = append(args, "--timeout", timeout)
 	}

@@ -7,6 +7,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/russellb/canhazgpu/internal/hostbridge"
 	"github.com/russellb/canhazgpu/internal/types"
 )
 
@@ -37,6 +38,11 @@ const (
 // held by a live process are signalled so they clean up after themselves - the
 // reservation is only released directly when no process is left to do it.
 func (ae *AllocationEngine) CancelTask(ctx context.Context, ref string, actualUser string, force bool) (*CancelResult, error) {
+	if ae.config.HostSocket != "" {
+		var result CancelResult
+		err := (hostbridge.Client{Socket: ae.config.HostSocket}).Call(ctx, hostbridge.Request{Operation: "cancel", TaskID: ref, Force: force}, &result)
+		return &result, err
+	}
 	ref = strings.TrimSpace(ref)
 	if ref == "" {
 		return nil, fmt.Errorf("no task ID given")
@@ -74,6 +80,9 @@ func (ae *AllocationEngine) cancelQueuedTask(ctx context.Context, entry *types.Q
 	if !force && owner != actualUser {
 		return nil, fmt.Errorf("task %s belongs to %s (use --force to cancel it anyway)", entry.ShortID(), entry.User)
 	}
+	if err := ae.checkTaskProcessOwner(ctx, entry.PID, owner); err != nil {
+		return nil, err
+	}
 
 	result := &CancelResult{
 		TaskID: entry.ShortID(),
@@ -99,6 +108,9 @@ func (ae *AllocationEngine) cancelRunningTask(ctx context.Context, task *Running
 	}
 	if !force && task.Account() != actualUser {
 		return nil, fmt.Errorf("task %s belongs to %s (use --force to cancel it anyway)", task.TaskID, task.User)
+	}
+	if err := ae.checkTaskProcessOwner(ctx, task.PID, task.Account()); err != nil {
+		return nil, err
 	}
 
 	result := &CancelResult{
@@ -151,6 +163,22 @@ func (ae *AllocationEngine) cancelRunningTask(ctx context.Context, task *Running
 	}
 	result.Released = len(released) > 0
 	return result, nil
+}
+
+// The host bridge can run cancellation as root. Never trust a stale or forged
+// reservation PID to identify a process belonging to a different account.
+func (ae *AllocationEngine) checkTaskProcessOwner(ctx context.Context, pid int, owner string) error {
+	if pid <= 0 || !isProcessAlive(pid) {
+		return nil
+	}
+	identity, err := ae.owners.Resolve(ctx, pid)
+	if err != nil {
+		return fmt.Errorf("cannot verify owner of PID %d: %w", pid, err)
+	}
+	if identity.User != owner {
+		return fmt.Errorf("refusing to signal PID %d: current owner %s differs from task account %s", pid, identity.User, owner)
+	}
+	return nil
 }
 
 // signalProcess sends a signal to a PID and reports whether it was delivered

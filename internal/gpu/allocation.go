@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/russellb/canhazgpu/internal/hostbridge"
 	"github.com/russellb/canhazgpu/internal/redis_client"
 	"github.com/russellb/canhazgpu/internal/types"
 	"github.com/russellb/canhazgpu/internal/utils"
@@ -35,38 +36,41 @@ type AllocationEngine struct {
 	usageMu     sync.Mutex
 	usageCache  map[int]*types.GPUUsage
 	usageCached time.Time
+	owners      *hostbridge.Resolver
 }
 
 func NewAllocationEngine(client *redis_client.Client, config *types.Config) *AllocationEngine {
 	return &AllocationEngine{
 		client: client,
 		config: config,
+		owners: &hostbridge.Resolver{Owners: config.ContainerOwners},
 	}
 }
 
 func (ae *AllocationEngine) detectGPUUsage(ctx context.Context) (map[int]*types.GPUUsage, error) {
 	ae.usageMu.Lock()
+	defer ae.usageMu.Unlock()
+	// A host bridge serves many clients concurrently. Share one driver query
+	// per cache interval instead of launching simultaneous npu/nvidia-smi calls.
 	if ae.usageCache != nil && time.Since(ae.usageCached) < usageCacheTTL {
-		cached := ae.usageCache
-		ae.usageMu.Unlock()
-		return cached, nil
+		return ae.usageCache, nil
 	}
-	ae.usageMu.Unlock()
 
 	usage, err := ae.queryGPUUsage(ctx)
 	if err != nil {
 		return nil, err
 	}
 
-	ae.usageMu.Lock()
 	ae.usageCache = usage
 	ae.usageCached = time.Now()
-	ae.usageMu.Unlock()
 
 	return usage, nil
 }
 
 func (ae *AllocationEngine) queryGPUUsage(ctx context.Context) (map[int]*types.GPUUsage, error) {
+	if ae.config.HostSocket != "" {
+		return (hostbridge.Client{Socket: ae.config.HostSocket}).Usage(ctx)
+	}
 	providerName, err := ae.client.GetAvailableProvider(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get cached provider information: %v", err)
@@ -84,7 +88,40 @@ func (ae *AllocationEngine) queryGPUUsage(ctx context.Context) (map[int]*types.G
 		pm = NewProviderManagerFromNames([]string{providerName})
 	}
 
-	return pm.DetectAllGPUUsageWithoutChecks(ctx)
+	usage, err := pm.DetectAllGPUUsageWithoutChecks(ctx)
+	if err != nil {
+		return nil, err
+	}
+	for _, device := range usage {
+		device.Users = make(map[string]bool)
+		for i := range device.Processes {
+			process := &device.Processes[i]
+			// Preserve the provider's native owner when procfs is unavailable.
+			// A recognized container without a mapping must never inherit root's
+			// guard exemption or another container's reservation.
+			identity, err := ae.owners.Resolve(ctx, process.PID)
+			if identity.ContainerID != "" {
+				process.User = "unknown"
+				if err == nil {
+					process.User = identity.User
+				}
+			}
+			device.Users[process.User] = true
+		}
+	}
+	return usage, nil
+}
+
+// DetectUsage returns the host view used by both guard scans and bridge clients.
+func (ae *AllocationEngine) DetectUsage(ctx context.Context) (map[int]*types.GPUUsage, error) {
+	return ae.detectGPUUsage(ctx)
+}
+
+func (ae *AllocationEngine) taskPID() int {
+	if ae.config.HostPID > 0 {
+		return ae.config.HostPID
+	}
+	return os.Getpid()
 }
 
 // NewTaskID returns a short handle for a reservation, shown by 'queue' and
@@ -107,7 +144,7 @@ func (ae *AllocationEngine) AllocateGPUs(ctx context.Context, request *types.All
 		request.TaskID = NewTaskID()
 	}
 	if request.ReservationType == types.ReservationTypeRun && request.PID == 0 {
-		request.PID = os.Getpid()
+		request.PID = ae.taskPID()
 	}
 
 	// Best effort maintenance so this request sees an up-to-date pool: due
@@ -770,7 +807,7 @@ func (ae *AllocationEngine) createQueueEntry(request *QueuedAllocationRequest) *
 		EnqueueTime:     types.FlexibleTime{Time: now},
 		LastHeartbeat:   types.FlexibleTime{Time: now},
 		// The waiting process cleans up its own entry when signalled
-		PID: os.Getpid(),
+		PID: ae.taskPID(),
 	}
 
 	if request.ExpiryTime != nil {

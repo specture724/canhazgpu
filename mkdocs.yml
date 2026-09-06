@@ -69,6 +69,7 @@ nav:
     - Scheduled Bookings: usage-schedule.md
     - Releasing GPUs: usage-release.md
     - Status Monitoring: usage-status.md
+    - Docker 开发环境: docker.md
   - Features:
     - GPU Validation: features-validation.md
     - Unreserved Usage Detection: features-unreserved.md
