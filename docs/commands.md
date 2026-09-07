@@ -668,6 +668,7 @@ canhazgpu guard [--enforce] [--interval <time>] [--once] [--dry-run]
 - `--max-warnings`: Warnings before enforcement starts (default: 3)
 - `--kill-grace`: Wait between SIGINT, SIGTERM and SIGKILL (default: 30s)
 - `--max-kills-per-hour`: Safety limit on terminations (default: 3, 0 disables)
+- `--max-tasks-per-user`: Concurrent tasks per OS account (default: 4, 0 disables); excess requests queue
 - `--channels`: Warning channels: `process`, `tty`, `log`, `wall` (default: `process,tty,log`)
 - `--log-file`: Also append warnings to this file
 - `--exclude-users` / `--exclude-commands`: Allow lists

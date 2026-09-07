@@ -40,6 +40,7 @@ booking:
 
 # Guard: monitoring and enforcement of the reservation system
 guard:
+  max-tasks-per-user: 4     # Concurrent tasks per OS account; 0 disables
   interval: "15s"
   grace: "60s"
   confirmations: 2

@@ -88,7 +88,7 @@ _canhazgpu_complete() {
             COMPREPLY=( $(compgen -W "--date --days --json --cancel --force --no-color --help" -- "$cur") )
             ;;
         guard)
-            COMPREPLY=( $(compgen -W "--enforce --dry-run --once --interval --grace --confirmations --warn-interval --max-warnings --kill-grace --max-kills-per-hour --channels --log-file --exclude-users --exclude-commands --min-memory --notify-holder --no-maintenance --help" -- "$cur") )
+            COMPREPLY=( $(compgen -W "--enforce --dry-run --once --interval --grace --confirmations --warn-interval --max-warnings --kill-grace --max-kills-per-hour --max-tasks-per-user --channels --log-file --exclude-users --exclude-commands --min-memory --notify-holder --no-maintenance --help" -- "$cur") )
             ;;
         violations)
             COMPREPLY=( $(compgen -W "--json --history --days --help" -- "$cur") )

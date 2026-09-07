@@ -1105,6 +1105,24 @@ func (c *Client) GetViolationHistory(ctx context.Context, startTime, endTime tim
 
 // Guard Coordination
 
+// SetMaxTasksPerUser publishes the guard's pool-wide admission policy. It stays
+// in effect until another guard scan changes it, including setting it to zero.
+func (c *Client) SetMaxTasksPerUser(ctx context.Context, limit int) error {
+	if limit < 0 {
+		return fmt.Errorf("max-tasks-per-user cannot be negative")
+	}
+	return c.rdb.Set(ctx, types.RedisKeyGuardMaxTasksPerUser, limit, 0).Err()
+}
+
+// GetMaxTasksPerUser returns the shared policy; pools without a guard have no limit.
+func (c *Client) GetMaxTasksPerUser(ctx context.Context) (int, error) {
+	limit, err := c.rdb.Get(ctx, types.RedisKeyGuardMaxTasksPerUser).Int()
+	if err == redis.Nil {
+		return 0, nil
+	}
+	return limit, err
+}
+
 // AcquireGuardLock claims the singleton guard role. It reports whether the lock
 // was obtained, and who holds it otherwise.
 func (c *Client) AcquireGuardLock(ctx context.Context, owner string) (bool, string, error) {

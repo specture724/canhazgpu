@@ -104,6 +104,40 @@ Safety rails:
 !!! warning "root is excluded by default"
     `--exclude-users` defaults to `root`, so guard ignores **all** root processes — including a root job running on somebody else's reserved GPU. `status` will still show `⚠ FOREIGN`. To make guard react to root users as well, start it with `--exclude-users ''` (or configure `guard.exclude-users: []`); display/monitoring tools remain covered by `--exclude-commands`.
 
+## Concurrent tasks per account
+
+By default, guard limits each OS account to **4 concurrent tasks**. Each active
+reservation counts as one task, including manual reservations and activated
+bookings; a task holding multiple GPUs still counts only once. Changing the
+`--user` display name does not give an account extra slots.
+
+```bash
+canhazgpu guard --max-tasks-per-user 2  # Allow two tasks per account
+canhazgpu guard --max-tasks-per-user 0  # Disable the limit
+```
+
+Set `guard.max-tasks-per-user` in the configuration file, or use
+`CANHAZGPU_GUARD_MAX_TASKS_PER_USER`. The command-line flag takes priority.
+Values must be non-negative integers.
+
+When an account reaches its limit, new `run` and `reserve` requests enter the
+existing queue, even when GPUs are free. They start automatically when a task
+releases its reservation and enough GPUs are available. Other accounts can
+still start while a capped account waits. `--nonblock` returns an error instead
+of waiting, and `--wait` still bounds the wait. Due bookings remain pending
+until a slot opens within their original booking window.
+
+The guard publishes the limit in Redis on each scan, including `--once`, so all
+clients sharing that GPU pool follow the same policy without loading the guard's
+configuration. The last published value remains in effect if guard stops; run
+`canhazgpu guard --once --max-tasks-per-user 0` to disable it. Pools where guard
+has never published a limit retain unlimited admission.
+
+This admission policy applies independently of `--enforce`, `--dry-run`,
+`--no-maintenance` and the process warning allow lists. Lowering the limit leaves
+existing tasks running and queues new ones until the account is below the limit.
+Upgrade the clients as well as guard so every allocation observes this policy.
+
 ## Housekeeping
 
 The guard is the only long-running part of canhazgpu, so it also performs the maintenance that other commands trigger on demand:
@@ -167,6 +201,7 @@ Note that warnings are throttled by wall-clock time, so cron scans escalate on e
 ```yaml
 # ~/.canhazgpu.yaml (or /etc/canhazgpu.yaml for a system-wide guard)
 guard:
+  max-tasks-per-user: 4     # Concurrent tasks per OS account; 0 disables
   interval: "15s"
   grace: "60s"
   confirmations: 2

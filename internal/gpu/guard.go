@@ -45,8 +45,9 @@ type GuardConfig struct {
 	ExcludeCommands []string // Process name fragments that are never reported
 	MinMemoryMB     int      // Ignore processes below this much memory (0 = no filter)
 
-	Maintenance  bool // Also activate due bookings and reclaim reservations
-	NotifyHolder bool // Tell the reservation holder when somebody squats their GPU
+	Maintenance     bool // Also activate due bookings and reclaim reservations
+	NotifyHolder    bool // Tell the reservation holder when somebody squats their GPU
+	MaxTasksPerUser int  // Maximum concurrent reservations per OS account (0 = disabled)
 }
 
 // DefaultGuardConfig returns the guard configuration used unless overridden.
@@ -65,6 +66,7 @@ func DefaultGuardConfig() GuardConfig {
 		ExcludeCommands: []string{"Xorg", "nvidia-smi", "amd-smi", "dcgm-exporter", "nvidia-persistenced"},
 		Maintenance:     true,
 		NotifyHolder:    true,
+		MaxTasksPerUser: 4,
 	}
 }
 
@@ -187,6 +189,11 @@ func (g *Guard) reportStartup() {
 // RunOnce performs a single scan: detect usage, reconcile it with the known
 // violations, then warn or terminate as configured
 func (g *Guard) RunOnce(ctx context.Context) (*GuardPass, error) {
+	// Publish policy for all clients, including ones without the guard's config.
+	if err := g.client.SetMaxTasksPerUser(ctx, g.settings.MaxTasksPerUser); err != nil {
+		return nil, fmt.Errorf("failed to publish task limit: %w", err)
+	}
+
 	// The guard is the only always-on part of canhazgpu, so it also drives the
 	// housekeeping that commands would otherwise have to trigger
 	if g.settings.Maintenance {

@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -52,7 +53,10 @@ func (ae *AllocationEngine) GetRunningTasks(ctx context.Context) ([]*RunningTask
 
 	for gpuID := 0; gpuID < gpuCount; gpuID++ {
 		state, err := ae.client.GetGPUState(ctx, gpuID)
-		if err != nil || state.User == "" {
+		if err != nil {
+			return nil, fmt.Errorf("failed to read state of GPU %d: %w", gpuID, err)
+		}
+		if state.User == "" {
 			continue
 		}
 
@@ -83,6 +87,43 @@ func (ae *AllocationEngine) GetRunningTasks(ctx context.Context) ([]*RunningTask
 	})
 
 	return tasks, nil
+}
+
+// ErrTaskLimitReached means the account must wait for a running task to finish.
+var ErrTaskLimitReached = errors.New("concurrent task limit reached")
+
+// checkTaskLimit must be called under the allocation lock when admitting a task.
+// Queue eligibility also uses it to skip accounts that cannot start yet.
+func (ae *AllocationEngine) checkTaskLimit(ctx context.Context, user, actualUser, taskID string) error {
+	limit, err := ae.client.GetMaxTasksPerUser(ctx)
+	if err != nil {
+		return err
+	}
+	if limit == 0 {
+		return nil
+	}
+	if actualUser == "" {
+		actualUser = user
+	}
+	tasks, err := ae.GetRunningTasks(ctx)
+	if err != nil {
+		return err
+	}
+	count := 0
+	for _, task := range tasks {
+		if task.Account() != actualUser {
+			continue
+		}
+		// Completing a partial allocation does not start another task.
+		if taskID != "" && task.TaskID == taskID {
+			return nil
+		}
+		count++
+	}
+	if count >= limit {
+		return fmt.Errorf("%w for %s (%d/%d)", ErrTaskLimitReached, actualUser, count, limit)
+	}
+	return nil
 }
 
 // FindTask resolves an ID prefix against the tasks that hold GPUs right now
