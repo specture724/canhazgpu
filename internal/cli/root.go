@@ -36,6 +36,7 @@ func init() {
 
 	// Global flags
 	rootCmd.PersistentFlags().String("host-socket", "", "Host guard Unix socket (auto-detected at /run/canhazgpu/host.sock; 'off' disables)")
+	rootCmd.PersistentFlags().String("docker-owners", "", "Host JSON file mapping Docker container IDs to accounts (default: /etc/canhazgpu/docker-owners.json)")
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "config file (default is $HOME/.canhazgpu.yaml)")
 	rootCmd.PersistentFlags().String("redis-host", "localhost", "Redis host")
 	rootCmd.PersistentFlags().Int("redis-port", 6379, "Redis port")
@@ -175,6 +176,17 @@ func getCurrentUser() string {
 
 func prepareHostBridge(cmd *cobra.Command, args []string) error {
 	cfg := getConfig()
+	ownersPath := viper.GetString("docker-owners")
+	if ownersPath == "" && cmd.Name() == "guard" {
+		// Preserve existing guard configuration files after promoting the flag
+		// to a global option that standalone status can also use.
+		ownersPath = viper.GetString("guard.docker-owners")
+	}
+	owners, err := loadContainerOwners(ownersPath)
+	if err != nil {
+		return fmt.Errorf("Docker owner mappings: %w", err)
+	}
+	cfg.ContainerOwners = owners
 	if cmd.Name() == "guard" {
 		if cfg.HostSocket != "" && cfg.HostSocket != "off" {
 			return fmt.Errorf("guard must run on the host; remove --host-socket / CANHAZGPU_HOST_SOCKET")
@@ -206,4 +218,15 @@ func prepareHostBridge(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("admin through the host bridge requires host root")
 	}
 	return nil
+}
+
+func loadContainerOwners(path string) (map[string]string, error) {
+	if path != "" {
+		return hostbridge.LoadOwners(path)
+	}
+	owners, err := hostbridge.LoadOwners("/etc/canhazgpu/docker-owners.json")
+	if os.IsNotExist(err) {
+		return map[string]string{}, nil
+	}
+	return owners, err
 }

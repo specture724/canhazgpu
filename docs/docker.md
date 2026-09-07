@@ -95,6 +95,11 @@ Docker 不能向运行中的容器补充普通 bind mount，缺少挂载时需�
 无法确认归属的容器不会被默认为宿主机 root，客户端会提示补齐配置；
 设备扫描会显示 `unknown`，guard 不会终止身份不明的进程。
 
+`/etc/canhazgpu/docker-owners.json` 会被宿主机所有命令自动读取。
+因此即使 guard 停止，直接执行 `canhazgpu status` 也能显示映射中的账户；
+不需要为了查看归属而启动强制执行。其他路径可使用全局 `--docker-owners PATH`
+或 `CANHAZGPU_DOCKER_OWNERS=PATH`。独立 status 每次调用读取文件，guard 修改映射后需重启。
+
 ## 4. 容器内外使用
 
 ```bash

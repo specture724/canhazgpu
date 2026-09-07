@@ -72,7 +72,6 @@ Example usage:
 func init() {
 	defaults := gpu.DefaultGuardConfig()
 	guardCmd.Flags().String("listen", "", "Serve container clients on this Unix socket (e.g. /run/canhazgpu/host.sock)")
-	guardCmd.Flags().String("docker-owners", "", "Host JSON file mapping full Docker container IDs to host accounts")
 
 	guardCmd.Flags().String("interval", utils.FormatDurationShort(defaults.Interval), "How often to scan the GPUs")
 	guardCmd.Flags().Bool("once", false, "Run a single scan and exit (for cron)")
@@ -109,10 +108,6 @@ func runGuard(ctx context.Context) error {
 	}
 
 	config := getConfig()
-	config.ContainerOwners, err = hostbridge.LoadOwners(viper.GetString("guard.docker-owners"))
-	if err != nil {
-		return fmt.Errorf("Docker owner mappings: %w", err)
-	}
 	client := redis_client.NewClient(config)
 	defer func() {
 		if err := client.Close(); err != nil {
