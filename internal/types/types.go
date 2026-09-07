@@ -194,6 +194,10 @@ type UsageRecord struct {
 
 // Config represents the application configuration
 type Config struct {
+	HostSocket      string            // Optional host guard bridge (shared Redis and host device view)
+	HostPID         int               // PID in the host namespace, obtained from Unix peer credentials
+	HostUser        string            // Host account owning this process/container
+	ContainerOwners map[string]string // Host-only overrides keyed by full container ID
 	RedisHost       string
 	RedisPort       int
 	RedisDB         int

@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
+	"github.com/russellb/canhazgpu/internal/hostbridge"
 	"github.com/russellb/canhazgpu/internal/types"
 	"github.com/russellb/canhazgpu/internal/utils"
 	"github.com/spf13/cobra"
@@ -29,9 +31,12 @@ to requested GPUs while automatically handling cleanup when jobs complete or cra
 )
 
 func init() {
+	rootCmd.PersistentPreRunE = prepareHostBridge
 	cobra.OnInitialize(initConfig)
 
 	// Global flags
+	rootCmd.PersistentFlags().String("host-socket", "", "Host guard Unix socket (auto-detected at /run/canhazgpu/host.sock; 'off' disables)")
+	rootCmd.PersistentFlags().String("docker-owners", "", "Host JSON file mapping Docker container IDs to accounts (default: /etc/canhazgpu/docker-owners.json)")
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "config file (default is $HOME/.canhazgpu.yaml)")
 	rootCmd.PersistentFlags().String("redis-host", "localhost", "Redis host")
 	rootCmd.PersistentFlags().Int("redis-port", 6379, "Redis port")
@@ -96,6 +101,7 @@ func initConfig() {
 	bindAllFlags()
 
 	config = &types.Config{
+		HostSocket:      viper.GetString("host-socket"),
 		RedisHost:       viper.GetString("redis.host"),
 		RedisPort:       viper.GetInt("redis.port"),
 		RedisDB:         viper.GetInt("redis.db"),
@@ -156,6 +162,9 @@ func walkCommands(cmd *cobra.Command, fn func(*cobra.Command)) {
 }
 
 func getCurrentUser() string {
+	if config != nil && config.HostUser != "" {
+		return config.HostUser
+	}
 	if user := os.Getenv("USER"); user != "" {
 		return user
 	}
@@ -163,4 +172,61 @@ func getCurrentUser() string {
 		return user
 	}
 	return "unknown"
+}
+
+func prepareHostBridge(cmd *cobra.Command, args []string) error {
+	cfg := getConfig()
+	ownersPath := viper.GetString("docker-owners")
+	if ownersPath == "" && cmd.Name() == "guard" {
+		// Preserve existing guard configuration files after promoting the flag
+		// to a global option that standalone status can also use.
+		ownersPath = viper.GetString("guard.docker-owners")
+	}
+	owners, err := loadContainerOwners(ownersPath)
+	if err != nil {
+		return fmt.Errorf("Docker owner mappings: %w", err)
+	}
+	cfg.ContainerOwners = owners
+	if cmd.Name() == "guard" {
+		if cfg.HostSocket != "" && cfg.HostSocket != "off" {
+			return fmt.Errorf("guard must run on the host; remove --host-socket / CANHAZGPU_HOST_SOCKET")
+		}
+		cfg.HostSocket = ""
+		return nil
+	}
+	if cfg.HostSocket == "off" {
+		cfg.HostSocket = ""
+		return nil
+	}
+	if cfg.HostSocket == "" {
+		// The mounted directory survives a guard restart even while its socket
+		// is absent. Do not switch container clients to local root/PIDs then.
+		if info, err := os.Stat(filepath.Dir(hostbridge.DefaultSocket)); err == nil && info.IsDir() {
+			cfg.HostSocket = hostbridge.DefaultSocket
+		}
+	}
+	if cfg.HostSocket == "" {
+		return nil
+	}
+	identity, err := (hostbridge.Client{Socket: cfg.HostSocket}).Identity(cmd.Context())
+	if err != nil {
+		return err
+	}
+	cfg.HostPID, cfg.HostUser = identity.PID, identity.User
+	cfg.RedisDB, cfg.MemoryThreshold = identity.RedisDB, identity.MemoryThreshold
+	if cmd.Name() == "admin" && !identity.Admin {
+		return fmt.Errorf("admin through the host bridge requires host root")
+	}
+	return nil
+}
+
+func loadContainerOwners(path string) (map[string]string, error) {
+	if path != "" {
+		return hostbridge.LoadOwners(path)
+	}
+	owners, err := hostbridge.LoadOwners("/etc/canhazgpu/docker-owners.json")
+	if os.IsNotExist(err) {
+		return map[string]string{}, nil
+	}
+	return owners, err
 }

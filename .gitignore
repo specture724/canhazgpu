@@ -18,6 +18,7 @@ canhazgpu
 .idea/
 
 # Temporary and cache files
+__pycache__/
 .DS_Store
 *.tmp
 *.temp

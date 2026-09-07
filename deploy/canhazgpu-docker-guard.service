@@ -1,0 +1,16 @@
+[Unit]
+Description=canhazgpu host guard with Docker clients
+Wants=network-online.target redis.service
+After=network-online.target redis.service docker.service
+
+[Service]
+Type=simple
+User=root
+RuntimeDirectory=canhazgpu
+RuntimeDirectoryMode=0755
+ExecStart=/usr/local/bin/canhazgpu guard --listen /run/canhazgpu/host.sock --enforce
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
