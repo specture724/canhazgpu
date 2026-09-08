@@ -45,9 +45,10 @@ type GuardConfig struct {
 	ExcludeCommands []string // Process name fragments that are never reported
 	MinMemoryMB     int      // Ignore processes below this much memory (0 = no filter)
 
-	Maintenance     bool // Also activate due bookings and reclaim reservations
-	NotifyHolder    bool // Tell the reservation holder when somebody squats their GPU
-	MaxTasksPerUser int  // Maximum concurrent reservations per OS account (0 = disabled)
+	Maintenance     bool   // Also activate due bookings and reclaim reservations
+	NotifyHolder    bool   // Tell the reservation holder when somebody squats their GPU
+	MaxTasksPerUser int    // Maximum concurrent reservations per OS account (0 = disabled)
+	TaskLimitHours  string // Daily local-time window for the limit (empty = all day)
 }
 
 // DefaultGuardConfig returns the guard configuration used unless overridden.
@@ -190,7 +191,7 @@ func (g *Guard) reportStartup() {
 // violations, then warn or terminate as configured
 func (g *Guard) RunOnce(ctx context.Context) (*GuardPass, error) {
 	// Publish policy for all clients, including ones without the guard's config.
-	if err := g.client.SetMaxTasksPerUser(ctx, g.settings.MaxTasksPerUser); err != nil {
+	if err := g.client.SetMaxTasksPerUser(ctx, g.settings.MaxTasksPerUser, g.settings.TaskLimitHours); err != nil {
 		return nil, fmt.Errorf("failed to publish task limit: %w", err)
 	}
 

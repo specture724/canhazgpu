@@ -165,3 +165,45 @@ func TestFormatDurationShort(t *testing.T) {
 		assert.Equal(t, tt.expected, FormatDurationShort(tt.input))
 	}
 }
+
+func TestInDailyTimeWindow(t *testing.T) {
+	for _, tt := range []struct {
+		window, clock string
+		want, wantErr bool
+	}{
+		{"", "12:00:00", true, false},
+		{"09:00-18:00", "08:59:59", false, false},
+		{"09:00-18:00", "09:00:00", true, false},
+		{"09:00-18:00", "17:59:59", true, false},
+		{"09:00-18:00", "18:00:00", false, false},
+		{"22:00-06:00", "21:59:59", false, false},
+		{"22:00-06:00", "22:00:00", true, false},
+		{"22:00-06:00", "00:00:00", true, false},
+		{"22:00-06:00", "05:59:59", true, false},
+		{"22:00-06:00", "06:00:00", false, false},
+		{"23:00-00:00", "23:59:59", true, false},
+		{"23:00-00:00", "00:00:00", false, false},
+		{" 09:00-18:00 ", "09:00:00", true, false},
+		{"09:00-09:00", "12:00:00", false, true},
+		{"09:00", "12:00:00", false, true},
+		{"09:00-", "12:00:00", false, true},
+		{"25:00-18:00", "12:00:00", false, true},
+		{"09:60-18:00", "12:00:00", false, true},
+		{"9:00-18:00", "12:00:00", false, true},
+		{"09:00:00-18:00", "12:00:00", false, true},
+		{"09:00-18:00-20:00", "12:00:00", false, true},
+	} {
+		t.Run(tt.window+"/"+tt.clock, func(t *testing.T) {
+			// Use a non-UTC location to verify that wall-clock hours are respected.
+			now, err := time.Parse(time.RFC3339, "2026-09-08T"+tt.clock+"+08:00")
+			require.NoError(t, err)
+			got, err := InDailyTimeWindow(tt.window, now)
+			if tt.wantErr {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}

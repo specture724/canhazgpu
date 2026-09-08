@@ -121,6 +121,32 @@ func ParseDuration(duration string) (time.Duration, error) {
 	return 0, fmt.Errorf("invalid duration format: %s (use formats like 30s, 30m, 2h, 1d)", duration)
 }
 
+// InDailyTimeWindow reports whether now is inside a daily HH:MM-HH:MM window
+// in now's location. The start is inclusive, the end exclusive; an empty window
+// means all day, and an end before the start crosses midnight.
+func InDailyTimeWindow(window string, now time.Time) (bool, error) {
+	window = strings.TrimSpace(window)
+	if window == "" {
+		return true, nil
+	}
+	startText, endText, ok := strings.Cut(window, "-")
+	start, startErr := time.Parse("15:04", startText)
+	end, endErr := time.Parse("15:04", endText)
+	if !ok || startErr != nil || endErr != nil || len(startText) != 5 || len(endText) != 5 {
+		return false, fmt.Errorf("invalid daily time window %q (use HH:MM-HH:MM)", window)
+	}
+	startMinute := start.Hour()*60 + start.Minute()
+	endMinute := end.Hour()*60 + end.Minute()
+	if startMinute == endMinute {
+		return false, fmt.Errorf("daily time window start and end must differ; use an empty value for all day")
+	}
+	minute := now.Hour()*60 + now.Minute()
+	if startMinute < endMinute {
+		return minute >= startMinute && minute < endMinute, nil
+	}
+	return minute >= startMinute || minute < endMinute, nil
+}
+
 // ParseTimeSpec parses a wall clock time specification into an absolute time,
 // interpreted in the local timezone. See ParseTimeSpecFrom for the accepted
 // formats.

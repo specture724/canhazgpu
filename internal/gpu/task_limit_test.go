@@ -68,7 +68,7 @@ func TestTaskLimitQueuesAndResumes(t *testing.T) {
 		t.Skip("Skipping Redis integration test in short mode")
 	}
 	engine, client, ctx := setupBookingTestEngine(t, 4)
-	require.NoError(t, client.SetMaxTasksPerUser(ctx, 1))
+	require.NoError(t, client.SetMaxTasksPerUser(ctx, 1, ""))
 	held, err := engine.AllocateGPUs(ctx, &types.AllocationRequest{
 		GPUCount: 1, User: "alice", ReservationType: types.ReservationTypeRun,
 	})
@@ -145,7 +145,7 @@ func TestTaskLimitConcurrentAdmission(t *testing.T) {
 		t.Skip("Skipping Redis integration test in short mode")
 	}
 	engine, client, ctx := setupBookingTestEngine(t, 8)
-	require.NoError(t, client.SetMaxTasksPerUser(ctx, 1))
+	require.NoError(t, client.SetMaxTasksPerUser(ctx, 1, ""))
 	start := make(chan struct{})
 	results := make(chan error, 6)
 	for i := 0; i < cap(results); i++ {
@@ -183,7 +183,7 @@ func TestTaskLimitDefersBooking(t *testing.T) {
 		t.Skip("Skipping Redis integration test in short mode")
 	}
 	engine, client, ctx := setupBookingTestEngine(t, 2)
-	require.NoError(t, client.SetMaxTasksPerUser(ctx, 1))
+	require.NoError(t, client.SetMaxTasksPerUser(ctx, 1, ""))
 	held, err := engine.AllocateGPUs(ctx, &types.AllocationRequest{
 		GPUIDs: []int{0}, User: "alice", ReservationType: types.ReservationTypeRun,
 	})
@@ -206,4 +206,50 @@ func TestTaskLimitDefersBooking(t *testing.T) {
 	activated, err = engine.ActivateDueBookings(ctx)
 	require.NoError(t, err)
 	assert.Len(t, activated, 1)
+}
+
+func TestGuardTaskLimitHours(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping Redis integration test in short mode")
+	}
+	now := time.Now()
+	start, end := now.Add(-time.Hour).Format("15:04"), now.Add(time.Hour).Format("15:04")
+	settings := DefaultGuardConfig()
+	settings.MaxTasksPerUser = 1
+	settings.TaskLimitHours = start + "-" + end
+	guard, _, _, ctx := setupGuard(t, 3, settings)
+	_, err := guard.RunOnce(ctx)
+	require.NoError(t, err)
+	engine := NewAllocationEngine(guard.client, guard.config)
+	request := &QueuedAllocationRequest{AllocationRequest: &types.AllocationRequest{
+		GPUCount: 1, User: "alice", ReservationType: types.ReservationTypeRun,
+	}}
+	_, err = engine.AllocateGPUsWithQueue(ctx, request)
+	require.NoError(t, err)
+	_, err = engine.AllocateGPUsWithQueue(ctx, request)
+	require.ErrorIs(t, err, ErrTaskLimitReached)
+	entry := engine.createQueueEntry(request)
+	require.NoError(t, guard.client.AddToQueue(ctx, entry))
+	first, err := engine.isFirstSatisfiableInQueue(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.False(t, first)
+
+	guard.settings.TaskLimitHours = end + "-" + start
+	_, err = guard.RunOnce(ctx)
+	require.NoError(t, err)
+	first, err = engine.isFirstSatisfiableInQueue(ctx, entry.ID)
+	require.NoError(t, err)
+	assert.True(t, first, "queued tasks become eligible outside the window")
+	result, err := engine.tryAllocateForQueueEntry(ctx, entry, request)
+	require.NoError(t, err)
+	require.NotNil(t, result, "outside the window a task can start even when its account is at the limit")
+
+	guard.settings.TaskLimitHours = start + "-" + end
+	_, err = guard.RunOnce(ctx)
+	require.NoError(t, err)
+	tasks, err := engine.GetRunningTasks(ctx)
+	require.NoError(t, err)
+	assert.Len(t, tasks, 2, "entering the window leaves existing tasks running")
+	_, err = engine.AllocateGPUsWithQueue(ctx, request)
+	require.ErrorIs(t, err, ErrTaskLimitReached)
 }

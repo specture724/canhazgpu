@@ -38,7 +38,10 @@ Disable this with --no-maintenance.
 Each OS account may hold at most --max-tasks-per-user concurrent tasks (default
 4). Excess run/reserve requests enter the queue until a slot opens. Set the
 limit to 0 to disable it. The policy is shared through Redis and remains in
-effect after guard exits; existing tasks continue running.
+effect after guard exits; existing tasks continue running. Use --task-limit-hours
+09:00-18:00 to apply the limit only during that daily local-time window (overnight
+windows such as 22:00-06:00 are supported). Outside it, task admission is unlimited.
+Omit the window or set it to an empty string for an all-day limit.
 
 Privileges: warning other users' processes and terminating them requires root,
 so the guard is normally run from systemd:
@@ -103,6 +106,8 @@ func init() {
 
 	guardCmd.Flags().Int("max-tasks-per-user", defaults.MaxTasksPerUser,
 		"Maximum concurrent tasks per OS account; excess requests queue (0 disables)")
+	guardCmd.Flags().String("task-limit-hours", "",
+		"Daily local-time window for the task limit, HH:MM-HH:MM (empty = all day)")
 
 	rootCmd.AddCommand(guardCmd)
 }
@@ -209,6 +214,10 @@ func guardSettingsFromConfig() (gpu.GuardConfig, error) {
 	settings.MaxTasksPerUser = limit
 	if settings.MaxTasksPerUser < 0 {
 		return settings, fmt.Errorf("max-tasks-per-user cannot be negative")
+	}
+	settings.TaskLimitHours = strings.TrimSpace(viper.GetString("guard.task-limit-hours"))
+	if _, err := utils.InDailyTimeWindow(settings.TaskLimitHours, time.Now()); err != nil {
+		return settings, fmt.Errorf("invalid task-limit-hours: %w", err)
 	}
 
 	return settings, nil

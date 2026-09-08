@@ -402,6 +402,7 @@ const (
 	RedisKeyGuardLock            = RedisKeyPrefix + "guard:lock"
 	RedisKeyGuardKills           = RedisKeyPrefix + "guard:kills"
 	RedisKeyGuardMaxTasksPerUser = RedisKeyPrefix + "guard:max_tasks_per_user"
+	RedisKeyGuardTaskLimitHours  = RedisKeyPrefix + "guard:task_limit_hours"
 
 	HeartbeatInterval   = 60 * time.Second
 	HeartbeatTimeout    = 5 * time.Minute

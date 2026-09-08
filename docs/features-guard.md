@@ -120,6 +120,31 @@ Set `guard.max-tasks-per-user` in the configuration file, or use
 `CANHAZGPU_GUARD_MAX_TASKS_PER_USER`. The command-line flag takes priority.
 Values must be non-negative integers.
 
+To apply the limit only during certain hours each day:
+
+```bash
+canhazgpu guard --max-tasks-per-user 4 --task-limit-hours 09:00-18:00
+canhazgpu guard --task-limit-hours 22:00-06:00  # Cross midnight
+canhazgpu guard --task-limit-hours ''           # Restore an all-day limit
+```
+
+Use `guard.task-limit-hours` in the configuration file or
+`CANHAZGPU_GUARD_TASK_LIMIT_HOURS` in the environment; a command-line value,
+including an empty string, takes priority. Times use the GPU server's local
+clock, with an inclusive start and exclusive end. Start and end must differ.
+The default empty window preserves all-day behavior; a zero task limit always
+disables this policy.
+
+Outside the window, the concurrency limit is off and queued requests can start
+as soon as enough GPUs are free. When the window opens, existing tasks continue
+running; new requests wait if the account is already at or above the limit.
+Only the task limit follows this window: other guard monitoring and maintenance
+continue normally.
+
+Clients read the shared window on every admission attempt, so switching hours
+does not depend on the guard scan interval and still works after `guard --once`
+exits. Queued requests retry on their normal polling interval.
+
 When an account reaches its limit, new `run` and `reserve` requests enter the
 existing queue, even when GPUs are free. They start automatically when a task
 releases its reservation and enough GPUs are available. Other accounts can
@@ -202,6 +227,7 @@ Note that warnings are throttled by wall-clock time, so cron scans escalate on e
 # ~/.canhazgpu.yaml (or /etc/canhazgpu.yaml for a system-wide guard)
 guard:
   max-tasks-per-user: 4     # Concurrent tasks per OS account; 0 disables
+  task-limit-hours: ""     # Daily local time, e.g. "09:00-18:00"; empty = all day
   interval: "15s"
   grace: "60s"
   confirmations: 2

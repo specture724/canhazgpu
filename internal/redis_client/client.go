@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"math/rand"
+	"strconv"
 	"time"
 
 	"github.com/go-redis/redis/v8"
 	"github.com/russellb/canhazgpu/internal/types"
+	"github.com/russellb/canhazgpu/internal/utils"
 )
 
 type Client struct {
@@ -1107,20 +1109,40 @@ func (c *Client) GetViolationHistory(ctx context.Context, startTime, endTime tim
 
 // SetMaxTasksPerUser publishes the guard's pool-wide admission policy. It stays
 // in effect until another guard scan changes it, including setting it to zero.
-func (c *Client) SetMaxTasksPerUser(ctx context.Context, limit int) error {
+func (c *Client) SetMaxTasksPerUser(ctx context.Context, limit int, hours string) error {
 	if limit < 0 {
 		return fmt.Errorf("max-tasks-per-user cannot be negative")
 	}
-	return c.rdb.Set(ctx, types.RedisKeyGuardMaxTasksPerUser, limit, 0).Err()
+	if _, err := utils.InDailyTimeWindow(hours, time.Now()); err != nil {
+		return err
+	}
+	// Publish both values atomically so clients never see mixed policies.
+	return c.rdb.MSet(ctx, types.RedisKeyGuardMaxTasksPerUser, limit,
+		types.RedisKeyGuardTaskLimitHours, hours).Err()
 }
 
-// GetMaxTasksPerUser returns the shared policy; pools without a guard have no limit.
+// GetMaxTasksPerUser returns the limit effective now. Pools without a guard and
+// requests outside the daily window have no limit. Evaluate on each admission,
+// so the window still works after guard --once exits or between guard scans.
 func (c *Client) GetMaxTasksPerUser(ctx context.Context) (int, error) {
-	limit, err := c.rdb.Get(ctx, types.RedisKeyGuardMaxTasksPerUser).Int()
-	if err == redis.Nil {
+	values, err := c.rdb.MGet(ctx, types.RedisKeyGuardMaxTasksPerUser, types.RedisKeyGuardTaskLimitHours).Result()
+	if err != nil {
+		return 0, err
+	}
+	if values[0] == nil {
 		return 0, nil
 	}
-	return limit, err
+	limit, err := strconv.Atoi(values[0].(string))
+	if err != nil || limit == 0 {
+		return 0, err
+	}
+	if values[1] != nil {
+		active, err := utils.InDailyTimeWindow(values[1].(string), time.Now())
+		if err != nil || !active {
+			return 0, err
+		}
+	}
+	return limit, nil
 }
 
 // AcquireGuardLock claims the singleton guard role. It reports whether the lock
