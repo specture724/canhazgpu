@@ -396,11 +396,13 @@ const (
 	RedisKeyBookings       = RedisKeyPrefix + "bookings"
 	RedisKeyBooking        = RedisKeyPrefix + "booking:"
 
-	RedisKeyViolations       = RedisKeyPrefix + "violations"
-	RedisKeyViolation        = RedisKeyPrefix + "violation:"
-	RedisKeyViolationHistory = RedisKeyPrefix + "violation_history_sorted"
-	RedisKeyGuardLock        = RedisKeyPrefix + "guard:lock"
-	RedisKeyGuardKills       = RedisKeyPrefix + "guard:kills"
+	RedisKeyViolations           = RedisKeyPrefix + "violations"
+	RedisKeyViolation            = RedisKeyPrefix + "violation:"
+	RedisKeyViolationHistory     = RedisKeyPrefix + "violation_history_sorted"
+	RedisKeyGuardLock            = RedisKeyPrefix + "guard:lock"
+	RedisKeyGuardKills           = RedisKeyPrefix + "guard:kills"
+	RedisKeyGuardMaxTasksPerUser = RedisKeyPrefix + "guard:max_tasks_per_user"
+	RedisKeyGuardTaskLimitHours  = RedisKeyPrefix + "guard:task_limit_hours"
 
 	HeartbeatInterval   = 60 * time.Second
 	HeartbeatTimeout    = 5 * time.Minute

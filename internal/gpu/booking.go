@@ -310,6 +310,11 @@ func (ae *AllocationEngine) activateBooking(ctx context.Context, booking *types.
 		}
 	}()
 
+	// Leave a due booking pending until its account has a slot.
+	if err := ae.checkTaskLimit(ctx, booking.User, booking.ActualUser, booking.ShortID()); err != nil {
+		return err
+	}
+
 	for _, gpuID := range booking.GPUIDs {
 		state, err := ae.client.GetGPUState(ctx, gpuID)
 		if err != nil {

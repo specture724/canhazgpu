@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -149,6 +150,10 @@ func (ae *AllocationEngine) AllocateGPUs(ctx context.Context, request *types.All
 			fmt.Printf("Warning: failed to release allocation lock: %v\n", err)
 		}
 	}()
+
+	if err := ae.checkTaskLimit(ctx, request.User, request.ActualUser, ""); err != nil {
+		return nil, err
+	}
 
 	// Perform atomic allocation
 	allocatedGPUs, err := ae.client.AtomicReserveGPUs(ctx, request, unreservedGPUs)
@@ -833,6 +838,12 @@ func (ae *AllocationEngine) queueEntrySatisfiable(ctx context.Context, entry *ty
 	if needed <= 0 {
 		return true, nil
 	}
+	if err := ae.checkTaskLimit(ctx, entry.User, entry.ActualUser, entry.ShortID()); err != nil {
+		if errors.Is(err, ErrTaskLimitReached) {
+			return false, nil
+		}
+		return false, err
+	}
 
 	unreserved := unreservedGPUs
 	if entry.Force {
@@ -994,6 +1005,13 @@ func (ae *AllocationEngine) tryAllocateForQueueEntry(ctx context.Context, queueE
 	// Check if already complete
 	if entry.IsComplete() {
 		return ae.finalizeAllocation(ctx, entry, request)
+	}
+
+	if err := ae.checkTaskLimit(ctx, entry.User, entry.ActualUser, entry.ShortID()); err != nil {
+		if errors.Is(err, ErrTaskLimitReached) {
+			return nil, nil
+		}
+		return nil, err
 	}
 
 	// Refresh heartbeats for already-allocated GPUs to prevent them from

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,14 @@ The guard is the only long running part of canhazgpu, so it also performs the
 housekeeping other commands trigger on demand: scheduled bookings are activated
 when their window starts, and expired, stale or idle reservations are released.
 Disable this with --no-maintenance.
+
+Each OS account may hold at most --max-tasks-per-user concurrent tasks (default
+4). Excess run/reserve requests enter the queue until a slot opens. Set the
+limit to 0 to disable it. The policy is shared through Redis and remains in
+effect after guard exits; existing tasks continue running. Use --task-limit-hours
+09:00-18:00 to apply the limit only during that daily local-time window (overnight
+windows such as 22:00-06:00 are supported). Outside it, task admission is unlimited.
+Omit the window or set it to an empty string for an all-day limit.
 
 Privileges: warning other users' processes and terminating them requires root,
 so the guard is normally run from systemd:
@@ -94,6 +103,11 @@ func init() {
 	guardCmd.Flags().Bool("no-maintenance", false, "Do not activate bookings or release expired reservations")
 	guardCmd.Flags().Bool("notify-holder", defaults.NotifyHolder,
 		"Also tell the reservation holder when somebody else uses their GPU")
+
+	guardCmd.Flags().Int("max-tasks-per-user", defaults.MaxTasksPerUser,
+		"Maximum concurrent tasks per OS account; excess requests queue (0 disables)")
+	guardCmd.Flags().String("task-limit-hours", "",
+		"Daily local-time window for the task limit, HH:MM-HH:MM (empty = all day)")
 
 	rootCmd.AddCommand(guardCmd)
 }
@@ -193,6 +207,18 @@ func guardSettingsFromConfig() (gpu.GuardConfig, error) {
 	settings.MinMemoryMB = viper.GetInt("guard.min-memory")
 	settings.Maintenance = !viper.GetBool("guard.no-maintenance")
 	settings.NotifyHolder = viper.GetBool("guard.notify-holder")
+	limit, err := strconv.Atoi(viper.GetString("guard.max-tasks-per-user"))
+	if err != nil {
+		return settings, fmt.Errorf("max-tasks-per-user must be an integer: %w", err)
+	}
+	settings.MaxTasksPerUser = limit
+	if settings.MaxTasksPerUser < 0 {
+		return settings, fmt.Errorf("max-tasks-per-user cannot be negative")
+	}
+	settings.TaskLimitHours = strings.TrimSpace(viper.GetString("guard.task-limit-hours"))
+	if _, err := utils.InDailyTimeWindow(settings.TaskLimitHours, time.Now()); err != nil {
+		return settings, fmt.Errorf("invalid task-limit-hours: %w", err)
+	}
 
 	return settings, nil
 }
