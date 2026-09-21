@@ -2,6 +2,10 @@
 
 The `reserve` command allows you to manually reserve GPUs for a specific duration without immediately running a command. This is useful for interactive development, planning work sessions, or blocking GPUs for maintenance.
 
+## Authorization
+
+Every `reserve` invocation verifies your sudo credentials with `sudo -v` before it creates a reservation or booking. Enter your sudo password when prompted. The command itself continues as your normal account, so the reservation remains yours and can be released with `canhazgpu release`; do not prefix it with `sudo`.
+
 ## Basic Usage
 
 ```bash

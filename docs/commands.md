@@ -332,6 +332,8 @@ Reserved 2 GPU(s): [0, 1] for command execution
 
 Manually reserve GPUs for a specified duration.
 
+`reserve` verifies sudo credentials before it creates a reservation or booking, while retaining the calling user's reservation ownership. Run `canhazgpu reserve ...` normally and enter your sudo password when prompted; do not prefix the command with `sudo`.
+
 ```bash
 canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>] [--nonblock] [--wait <duration>]
                   [--idle-timeout <time>] [--start <time>] [--end <time>]

@@ -3,6 +3,8 @@ package cli
 import (
 	"context"
 	"fmt"
+	"os"
+	"os/exec"
 	"sort"
 	"strconv"
 	"strings"
@@ -21,6 +23,9 @@ var reserveCmd = &cobra.Command{
 	Short: "Reserve GPUs manually for a specified duration",
 	Long: `Reserve GPUs manually for a specified duration without running a command.
 This is useful for interactive development sessions or planning work.
+
+This command verifies your sudo credentials before creating a reservation. It
+does not run the reservation as root, so it remains owned by your user account.
 
 By default, if GPUs are not available, the command will wait in a queue until
 resources become available (FCFS - First Come First Served). Use --nonblock to
@@ -87,6 +92,10 @@ Example usage:
 The reserved GPUs must be manually released with 'canhazgpu release' or will
 automatically expire after the specified duration.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if err := requireSudoAuthentication(cmd.Context()); err != nil {
+			return err
+		}
+
 		opts := reserveOptions{
 			gpuCount:       viper.GetInt("reserve.gpus"),
 			gpuIDs:         viper.GetIntSlice("reserve.gpu-ids"),
@@ -283,6 +292,24 @@ func runReserve(ctx context.Context, opts reserveOptions) error {
 		strings.Join(ids, ","),
 	)
 
+	return nil
+}
+
+// sudoValidator is replaceable in tests. sudo -v verifies the caller's sudo
+// credentials without running canhazgpu as root, so reservations remain owned
+// by the user who requested them.
+var sudoValidator = func(ctx context.Context) error {
+	cmd := exec.CommandContext(ctx, "sudo", "-v")
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return cmd.Run()
+}
+
+func requireSudoAuthentication(ctx context.Context) error {
+	if err := sudoValidator(ctx); err != nil {
+		return fmt.Errorf("sudo authentication is required to reserve GPUs: %w", err)
+	}
 	return nil
 }
 
