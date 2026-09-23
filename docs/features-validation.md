@@ -1,17 +1,25 @@
-# GPU Validation
+# Device Validation
 
-canhazgpu integrates with nvidia-smi to provide real-time validation of GPU usage, ensuring that reservations match actual resource utilization and detecting unreserved usage.
+canhazgpu uses the configured provider (`nvidia-smi`, `amd-smi`, or `npu-smi`)
+to validate actual device usage in real time, ensuring that reservations match
+resource utilization and detecting unreserved usage.
 
 ## How Validation Works
 
-### nvidia-smi Integration
-The system uses nvidia-smi to query actual GPU processes and memory usage:
+### Provider Integration
+The NVIDIA provider queries actual GPU processes and memory usage with
+`nvidia-smi`:
 
 ```bash
 # canhazgpu internally runs commands like:
 nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits
 nvidia-smi --query-compute-apps=pid,process_name,gpu_uuid,used_memory --format=csv,noheader
 ```
+
+AMD uses `amd-smi` JSON output. Huawei Ascend uses `npu-smi info` and its
+logical NPU IDs. Ascend devices can report a persistent HBM baseline even
+when idle, so canhazgpu derives Ascend memory usage from the process table
+rather than treating that baseline as a workload.
 
 ### Process Owner Detection
 For each GPU process, canhazgpu identifies the owner:
@@ -125,9 +133,9 @@ Identifies stale reservations that could be released early to improve resource a
 ## Validation in Allocation
 
 ### Pre-Allocation Scanning
-Before any GPU allocation, canhazgpu:
+Before any device allocation, canhazgpu:
 
-1. **Scans all GPUs** using nvidia-smi
+1. **Scans all devices** using the configured provider
 2. **Identifies unreserved usage** and excludes those GPUs
 3. **Updates available GPU pool** with only truly available GPUs
 4. **Proceeds with allocation** using the validated pool
@@ -187,7 +195,7 @@ The default threshold is **100 MB** and can be adjusted with `--memory-threshold
 
 ### Caching and Efficiency
 - Validation runs only during allocation and status commands
-- nvidia-smi queries are batched for efficiency
+- Provider queries are batched for efficiency
 - Process information is gathered in parallel where possible
 
 ### Impact on System Performance
@@ -217,19 +225,25 @@ Validation complements the heartbeat system:
 
 ## Troubleshooting Validation
 
-### nvidia-smi Not Available
+### Provider Tool Not Available
 ```bash
 Error: nvidia-smi command not found
 ```
 
-Ensure NVIDIA drivers are properly installed:
+Ensure the management tool for the configured provider is available:
 ```bash
-# Test nvidia-smi availability
+# NVIDIA
 nvidia-smi
 
-# If not available, install NVIDIA drivers
-sudo apt install nvidia-driver-*  # Ubuntu
+# AMD
+amd-smi list
+
+# Huawei Ascend
+npu-smi info
 ```
+
+For Ascend permission failures, add the account to the CANN runtime group
+(commonly `HwHiAiUser`) and start a new login session before retrying.
 
 ### Permission Issues
 ```bash
@@ -244,11 +258,12 @@ This may occur when:
 The system will still function but with less detailed process information.
 
 ### Memory Reporting Discrepancies
-Different tools may report slightly different GPU memory usage:
-- nvidia-smi vs. CUDA runtime memory reports
+Different tools may report slightly different device memory usage:
+- Provider tools vs. framework runtime memory reports
 - Shared memory vs. process-specific memory
 - Memory allocated vs. memory actually used
 
-canhazgpu uses nvidia-smi reporting for consistency across all processes.
+canhazgpu uses the configured provider's reporting consistently for all
+processes.
 
 GPU validation ensures that canhazgpu maintains accurate, real-time awareness of GPU resource utilization, preventing conflicts and enabling efficient resource sharing.

@@ -17,7 +17,7 @@ cd canhazgpu
 # System requirements
 # - Go 1.25+
 # - Redis server
-# - NVIDIA drivers with nvidia-smi
+# - A supported accelerator tool (nvidia-smi, amd-smi, or npu-smi)
 
 # Go dependencies (automatic)
 go mod download
@@ -451,7 +451,7 @@ func (e *AllocationEngine) AllocateGPUs(ctx context.Context, req *AllocationRequ
 
 ### 3. Adding New GPU Providers
 
-The system already supports NVIDIA, AMD, and Fake providers. To add support for new GPU hardware:
+The system already supports NVIDIA, AMD, Huawei Ascend, and Fake providers. To add support for new accelerator hardware:
 
 1. **Implement the GPUProvider interface:**
 ```go
@@ -602,7 +602,7 @@ Relates to #456
 - Operating system and version
 - Go version (for development issues)
 - Redis version
-- GPU driver version (NVIDIA or AMD)
+- Accelerator driver version (NVIDIA, AMD, or Ascend)
 - Complete error messages
 - Steps to reproduce
 - Expected vs actual behavior
@@ -616,7 +616,7 @@ Clear description of the bug
 - OS: Ubuntu 22.04
 - Go: 1.23.0 (if building from source)
 - Redis: 7.0.0
-- GPU Provider: nvidia / amd
+- GPU Provider: nvidia / amd / ascend
 - GPU Driver: 535.129.03
 - canhazgpu version: 1.0.0
 

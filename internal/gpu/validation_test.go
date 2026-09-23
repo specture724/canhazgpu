@@ -83,14 +83,14 @@ func TestDetectGPUUsage_Integration(t *testing.T) {
 	}
 
 	t.Log("Starting GPU provider integration test - may take 5-10 seconds or timeout")
-	t.Log("This test uses the new GPU Provider system (NVIDIA/AMD)")
+	t.Log("This test uses the GPU provider system (NVIDIA/AMD/Ascend)")
 
 	// Use the new GPU Provider system
 	pm := NewProviderManager()
 	availableProviders := pm.GetAvailableProviders()
 
 	if len(availableProviders) == 0 {
-		t.Skip("Skipping test: no GPU providers available (nvidia-smi, amd-smi not found)")
+		t.Skip("Skipping test: no GPU providers available (nvidia-smi, amd-smi, npu-smi unavailable)")
 	}
 
 	t.Logf("Found %d available provider(s):", len(availableProviders))

@@ -89,15 +89,15 @@ func (ft FlexibleTime) ToTime() time.Time {
 	return ft.Time
 }
 
-// GPUUsage represents actual GPU usage detected via nvidia-smi
+// GPUUsage represents actual accelerator usage detected by a provider.
 type GPUUsage struct {
 	GPUID              int              `json:"gpu_id"`
 	MemoryMB           int              `json:"memory_mb"`
 	UtilizationPercent int              `json:"utilization_percent,omitempty"` // GPU utilization reported by the provider (0-100)
 	Processes          []GPUProcessInfo `json:"processes"`
 	Users              map[string]bool  `json:"users"`
-	Provider           string           `json:"provider"` // "nvidia" or "amd"
-	Model              string           `json:"model"`    // GPU model name (e.g., "H100", "RTX 4090") or "AMD"
+	Provider           string           `json:"provider"` // e.g., "NVIDIA", "AMD", or "Ascend"
+	Model              string           `json:"model"`    // Device model name (e.g., "H100", "MI300X", or "910B1")
 }
 
 // GPUProcessInfo represents a process using a GPU

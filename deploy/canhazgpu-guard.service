@@ -1,0 +1,14 @@
+[Unit]
+Description=canhazgpu accelerator reservation guard
+Wants=network-online.target redis.service
+After=network-online.target redis.service
+
+[Service]
+Type=simple
+User=root
+ExecStart=/usr/local/bin/canhazgpu guard --enforce --exclude-users "" --interval 1s --grace 5s --confirmations 1 --max-warnings 1 --warn-interval 5s --kill-grace 5s --max-kills-per-hour 0 --channels log --log-file /home/ajhou/.cache/gpu.log
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target

@@ -22,6 +22,9 @@ canhazgpu admin --gpus $(nvidia-smi -L | wc -l)
 
 # AMD 主机
 canhazgpu admin --gpus $(amd-smi list --json | jq 'length')
+
+# 华为 Ascend 主机（示例：8 张逻辑 NPU）
+canhazgpu admin --gpus 8 --provider ascend
 ```
 
 不要在繁忙的主机上不带 `--force` 运行它；它会清空所有 reservation。
@@ -63,7 +66,7 @@ canhazgpu status --json | jq -r '.[] | select(.status == "AVAILABLE") | .gpu_id'
 
 ## 2. 跑任务：run
 
-`run` 是启动任何 GPU 负载的首选方式：它负责预约 GPU、设置 `CUDA_VISIBLE_DEVICES`、运行你的命令，并在命令退出后自动释放。一定要用 `--` 分隔 canhazgpu 的参数和你的命令：
+`run` 是启动任何加速器负载的首选方式：它负责预约设备、为 NVIDIA/AMD 设置 `CUDA_VISIBLE_DEVICES` 或为 Ascend 设置 `ASCEND_RT_VISIBLE_DEVICES`、运行你的命令，并在命令退出后自动释放。一定要用 `--` 分隔 canhazgpu 的参数和你的命令：
 
 ```bash
 canhazgpu run --gpus 1 -- python train.py
@@ -99,7 +102,7 @@ canhazgpu run --gpus 2 --timeout 12h --note "bert-finetune" -- \
 
 ## 3. 交互式工作：reserve
 
-当你不只跑一条命令、而是需要一段时间的 GPU（notebook、调试、多步骤实验）时，用 `reserve`。它是 **manual** reservation：有时长、不会自动设置 `CUDA_VISIBLE_DEVICES`，直到过期、闲置被回收或你手动释放。
+当你不只跑一条命令、而是需要一段时间的设备（notebook、调试、多步骤实验）时，用 `reserve`。它是 **manual** reservation：有时长、不会自动设置 provider 对应的可见设备变量，直到过期、闲置被回收或你手动释放。
 
 ```bash
 # 1 张 GPU，4 小时
@@ -110,6 +113,9 @@ canhazgpu reserve --gpu-ids 0,2 --duration 2h
 
 # 预约并一步设置环境变量
 export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --duration 3h --short)
+
+# 华为 Ascend
+export ASCEND_RT_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --duration 3h --short)
 
 jupyter notebook
 ```

@@ -76,7 +76,7 @@ The same rules apply as for manual reservations:
 
 **Reservations without an idle timeout are exempt.** That includes reservations created before this feature existed, `canhazgpu run --idle-timeout 0`, and any reservation whose stored timeout is zero. They stay tied to the lifetime of their process.
 
-**Reservations are only released when usage can actually be checked.** If `nvidia-smi`/`amd-smi` cannot be queried, idle detection is skipped for that pass rather than guessed at. The same applies to usage that cannot be attributed to an owner.
+**Reservations are only released when usage can actually be checked.** If `nvidia-smi`, `amd-smi`, or `npu-smi` cannot be queried, idle detection is skipped for that pass rather than guessed at. The same applies to usage that cannot be attributed to an owner.
 
 **Memory counts as usage.** A GPU holding a loaded model with no active kernel is "in use" as far as canhazgpu is concerned — this matches how the rest of the tool defines usage. Lower `--memory-threshold` if you want stricter accounting.
 

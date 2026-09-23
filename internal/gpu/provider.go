@@ -3,13 +3,15 @@ package gpu
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/russellb/canhazgpu/internal/types"
 )
 
-// GPUProvider defines the interface for GPU providers (NVIDIA, AMD, etc.)
+// GPUProvider defines the interface for accelerator providers (NVIDIA, AMD,
+// Ascend, etc.). The historical name is retained for API compatibility.
 type GPUProvider interface {
-	// Name returns the name of the provider (e.g., "nvidia", "amd")
+	// Name returns the name of the provider (e.g., "nvidia", "amd", "ascend")
 	Name() string
 
 	// IsAvailable checks if the provider's tools are available on the system
@@ -33,6 +35,7 @@ func NewProviderManager() *ProviderManager {
 		providers: []GPUProvider{
 			NewNVIDIAProvider(),
 			NewAMDProvider(),
+			NewAscendProvider(),
 		},
 	}
 }
@@ -42,11 +45,13 @@ func NewProviderManagerFromNames(providerNames []string) *ProviderManager {
 	var providers []GPUProvider
 
 	for _, name := range providerNames {
-		switch name {
+		switch CanonicalProviderName(name) {
 		case "nvidia":
 			providers = append(providers, NewNVIDIAProvider())
 		case "amd":
 			providers = append(providers, NewAMDProvider())
+		case AscendProviderName:
+			providers = append(providers, NewAscendProvider())
 		case "fake":
 			// Create with 0 GPUs; count will be set from Redis when used
 			providers = append(providers, NewFakeProvider(0))
@@ -55,6 +60,31 @@ func NewProviderManagerFromNames(providerNames []string) *ProviderManager {
 
 	return &ProviderManager{
 		providers: providers,
+	}
+}
+
+// CanonicalProviderName returns the name stored in Redis for a supported
+// provider. Ascend aliases are accepted for operator convenience.
+func CanonicalProviderName(providerName string) string {
+	normalized := strings.ToLower(strings.TrimSpace(providerName))
+	switch normalized {
+	case "nvidia", "amd", "fake":
+		return normalized
+	case AscendProviderName, "npu", "ascend-npu":
+		return AscendProviderName
+	default:
+		return ""
+	}
+}
+
+// VisibleDevicesEnvVar returns the runtime environment variable used to limit
+// a launched process to its allocated devices.
+func VisibleDevicesEnvVar(providerName string) string {
+	switch CanonicalProviderName(providerName) {
+	case AscendProviderName:
+		return AscendVisibleDevicesEnv
+	default:
+		return "CUDA_VISIBLE_DEVICES"
 	}
 }
 

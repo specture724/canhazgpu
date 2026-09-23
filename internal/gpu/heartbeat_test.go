@@ -14,7 +14,7 @@ func TestHeartbeatManager_Structure(t *testing.T) {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15,
+		RedisDB:   gpuTestRedisDB,
 	}
 	redisClient := redis_client.NewClient(config)
 
@@ -38,7 +38,7 @@ func TestHeartbeatManager_StartStop(t *testing.T) {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15,
+		RedisDB:   gpuTestRedisDB,
 	}
 	redisClient := redis_client.NewClient(config)
 
@@ -111,7 +111,7 @@ func TestHeartbeatManager_Wait(t *testing.T) {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15,
+		RedisDB:   gpuTestRedisDB,
 	}
 	redisClient := redis_client.NewClient(config)
 
@@ -175,7 +175,7 @@ func TestHeartbeatManager_SendHeartbeat(t *testing.T) {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15,
+		RedisDB:   gpuTestRedisDB,
 	}
 	redisClient := redis_client.NewClient(config)
 
@@ -201,7 +201,7 @@ func TestHeartbeatManager_DoubleStop(t *testing.T) {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15,
+		RedisDB:   gpuTestRedisDB,
 	}
 	redisClient := redis_client.NewClient(config)
 
@@ -279,7 +279,7 @@ func TestHeartbeatManager_ReleaseGPUs(t *testing.T) {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15,
+		RedisDB:   gpuTestRedisDB,
 	}
 	redisClient := redis_client.NewClient(config)
 
@@ -328,7 +328,7 @@ func TestHeartbeatManager_ReservationLoss(t *testing.T) {
 	config := &types.Config{
 		RedisHost: "localhost",
 		RedisPort: 6379,
-		RedisDB:   15,
+		RedisDB:   gpuTestRedisDB,
 	}
 	client := redis_client.NewClient(config)
 

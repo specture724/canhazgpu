@@ -41,7 +41,8 @@ canhazgpu web --port 8080
 - ✅ **Heartbeat monitoring**: Detects crashed processes and reclaims GPUs
 - ✅ **Unreserved usage detection**: Identifies GPUs in use without proper reservations
 - ✅ **User accountability**: Shows which users are running unreserved processes
-- ✅ **Real-time validation**: Uses nvidia-smi to verify actual GPU usage
+- ✅ **Real-time validation**: Uses nvidia-smi, amd-smi, or npu-smi to verify actual device usage
+- ✅ **Multi-provider support**: Supports NVIDIA, AMD, and Huawei Ascend devices
 - ✅ **Smart allocation**: Automatically excludes unreserved GPUs from allocation
 - ✅ **Usage reporting**: Track and analyze GPU usage patterns over time
 - ✅ **Web dashboard**: Real-time monitoring interface with status and reports
