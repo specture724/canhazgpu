@@ -60,6 +60,57 @@ func TestGuardMaxTasksPerUserConfig(t *testing.T) {
 	}
 }
 
+func TestGuardMaxGPUsPerUserConfig(t *testing.T) {
+	originalViper := *viper.GetViper()
+	flag := guardCmd.Flags().Lookup("max-gpus-per-user")
+	originalValue, originalChanged := flag.Value.String(), flag.Changed
+	t.Cleanup(func() {
+		require.NoError(t, flag.Value.Set(originalValue))
+		flag.Changed = originalChanged
+		*viper.GetViper() = originalViper
+	})
+
+	for _, tt := range []struct {
+		name, config, env, flag string
+		want                    int
+		wantErr                 bool
+	}{
+		{name: "default", want: 8},
+		{name: "config file", config: "4", want: 4},
+		{name: "config disables", config: "0", want: 0},
+		{name: "environment overrides config", config: "4", env: "6", want: 6},
+		{name: "flag overrides environment and config", config: "4", env: "6", flag: "12", want: 12},
+		{name: "zero flag overrides config", config: "4", flag: "0", want: 0},
+		{name: "negative config", config: "-1", wantErr: true},
+		{name: "negative flag", flag: "-1", wantErr: true},
+		{name: "invalid config", config: "invalid", wantErr: true},
+		{name: "fractional config", config: "2.5", wantErr: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			viper.Reset()
+			bindAllFlags()
+			require.NoError(t, flag.Value.Set(flag.DefValue))
+			flag.Changed = false
+			viper.SetConfigType("yaml")
+			if tt.config != "" {
+				require.NoError(t, viper.ReadConfig(strings.NewReader("guard:\n  max-gpus-per-user: "+tt.config)))
+			}
+			require.NoError(t, viper.BindEnv("guard.max-gpus-per-user", "CANHAZGPU_GUARD_MAX_GPUS_PER_USER"))
+			t.Setenv("CANHAZGPU_GUARD_MAX_GPUS_PER_USER", tt.env)
+			if tt.flag != "" {
+				require.NoError(t, guardCmd.Flags().Set("max-gpus-per-user", tt.flag))
+			}
+			settings, err := guardSettingsFromConfig()
+			if tt.wantErr {
+				require.ErrorContains(t, err, "max-gpus-per-user")
+				return
+			}
+			require.NoError(t, err)
+			assert.Equal(t, tt.want, settings.MaxGPUsPerUser)
+		})
+	}
+}
+
 func TestGuardTaskLimitHoursConfig(t *testing.T) {
 	originalViper := *viper.GetViper()
 	flag := guardCmd.Flags().Lookup("task-limit-hours")

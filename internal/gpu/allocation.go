@@ -2,7 +2,6 @@ package gpu
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -112,8 +111,10 @@ func (ae *AllocationEngine) AllocateGPUs(ctx context.Context, request *types.All
 	}
 
 	// Best effort maintenance so this request sees an up-to-date pool: due
-	// bookings take their GPUs, expired and idle reservations are freed
+	// bookings take their GPUs, expired and idle reservations are freed, and
+	// dead queue entries do not hold submission quota
 	_ = ae.CleanupExpiredReservations(ctx)
+	_, _ = ae.client.CleanupStaleQueueEntries(ctx)
 
 	// Validate GPU availability using cached provider information
 	usage, err := ae.detectGPUUsage(ctx)
@@ -151,7 +152,7 @@ func (ae *AllocationEngine) AllocateGPUs(ctx context.Context, request *types.All
 		}
 	}()
 
-	if err := ae.checkTaskLimit(ctx, request.User, request.ActualUser, ""); err != nil {
+	if err := ae.checkSubmissionLimits(ctx, request.User, request.ActualUser, request.GetRequestedGPUCount()); err != nil {
 		return nil, err
 	}
 
@@ -719,17 +720,18 @@ func (ae *AllocationEngine) AllocateGPUsWithQueue(ctx context.Context, request *
 		return &QueuedAllocationResult{AllocatedGPUs: allocatedGPUs}, nil
 	}
 
-	// If not blocking, return the error immediately
-	if !request.Blocking {
+	// If not blocking, or if the account's submitted task/GPU limit would be
+	// exceeded, return the error immediately without entering the queue
+	if !request.Blocking || isLimitError(err) {
 		return nil, err
 	}
 
 	// Create a queue entry
 	queueEntry := ae.createQueueEntry(request)
 
-	// Add to queue
-	if err := ae.client.AddToQueue(ctx, queueEntry); err != nil {
-		return nil, fmt.Errorf("failed to add to queue: %v", err)
+	// Re-check submission limits and add to queue atomically under the allocation lock
+	if err := ae.enqueueWithLimits(ctx, queueEntry); err != nil {
+		return nil, err
 	}
 
 	// Start queue heartbeat
@@ -754,6 +756,30 @@ func (ae *AllocationEngine) AllocateGPUsWithQueue(ctx context.Context, request *
 	// capable; otherwise ring the terminal bell.
 	utils.NotifyTerminalAttention("canhazgpu", fmt.Sprintf("Allocated %d GPU(s)", len(result.AllocatedGPUs)))
 	return result, nil
+}
+
+// enqueueWithLimits re-checks per-account submission limits under the allocation
+// lock and adds queueEntry atomically, preventing concurrent submissions from
+// exceeding the task or GPU quota.
+func (ae *AllocationEngine) enqueueWithLimits(ctx context.Context, queueEntry *types.QueueEntry) error {
+	if err := ae.client.AcquireAllocationLock(ctx); err != nil {
+		return err
+	}
+	defer func() {
+		if err := ae.client.ReleaseAllocationLock(ctx); err != nil {
+			fmt.Printf("Warning: failed to release allocation lock: %v\n", err)
+		}
+	}()
+
+	if err := ae.checkSubmissionLimits(ctx, queueEntry.User, queueEntry.ActualUser, queueEntry.GetRequestedGPUCount()); err != nil {
+		return err
+	}
+
+	if err := ae.client.AddToQueue(ctx, queueEntry); err != nil {
+		return fmt.Errorf("failed to add to queue: %v", err)
+	}
+
+	return nil
 }
 
 // createQueueEntry creates a new queue entry from an allocation request
@@ -838,8 +864,8 @@ func (ae *AllocationEngine) queueEntrySatisfiable(ctx context.Context, entry *ty
 	if needed <= 0 {
 		return true, nil
 	}
-	if err := ae.checkTaskLimit(ctx, entry.User, entry.ActualUser, entry.ShortID()); err != nil {
-		if errors.Is(err, ErrTaskLimitReached) {
+	if err := ae.checkRunningLimits(ctx, entry.User, entry.ActualUser, entry.GetRequestedGPUCount(), entry.ShortID()); err != nil {
+		if isLimitError(err) {
 			return false, nil
 		}
 		return false, err
@@ -1007,8 +1033,8 @@ func (ae *AllocationEngine) tryAllocateForQueueEntry(ctx context.Context, queueE
 		return ae.finalizeAllocation(ctx, entry, request)
 	}
 
-	if err := ae.checkTaskLimit(ctx, entry.User, entry.ActualUser, entry.ShortID()); err != nil {
-		if errors.Is(err, ErrTaskLimitReached) {
+	if err := ae.checkRunningLimits(ctx, entry.User, entry.ActualUser, entry.GetRequestedGPUCount(), entry.ShortID()); err != nil {
+		if isLimitError(err) {
 			return nil, nil
 		}
 		return nil, err
