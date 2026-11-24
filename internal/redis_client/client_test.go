@@ -973,42 +973,59 @@ func TestClient_ProviderExplicitSet(t *testing.T) {
 	assert.Equal(t, "nvidia", provider)
 }
 
-func TestClient_TaskLimitHours(t *testing.T) {
+func TestClient_TaskLimitsAndHours(t *testing.T) {
 	client := setupTestRedis(t)
 	ctx := context.Background()
-	// Policies written before time windows existed still apply all day.
+
+	// Policies written before GPU limits or time windows existed still apply all day.
 	require.NoError(t, client.rdb.Set(ctx, types.RedisKeyGuardMaxTasksPerUser, 4, 0).Err())
-	limit, err := client.GetMaxTasksPerUser(ctx)
+	limits, err := client.GetTaskLimits(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 4, limit)
+	assert.Equal(t, types.TaskLimits{MaxTasksPerUser: 4, MaxGPUsPerUser: 0}, limits)
 
 	now := time.Now()
 	start, end := now.Add(-time.Hour).Format("15:04"), now.Add(time.Hour).Format("15:04")
 	for _, tt := range []struct {
-		name, hours string
-		limit, want int
+		name, hours         string
+		maxTasks, maxGPUs   int
+		wantTasks, wantGPUs int
 	}{
-		{"inside window", start + "-" + end, 4, 4},
-		{"outside window", end + "-" + start, 4, 0},
-		{"empty clears window", "", 4, 4},
-		{"zero disables", start + "-" + end, 0, 0},
+		{"inside window", start + "-" + end, 4, 8, 4, 8},
+		{"outside window", end + "-" + start, 4, 8, 0, 0},
+		{"empty clears window", "", 4, 8, 4, 8},
+		{"only GPU limit enabled", start + "-" + end, 0, 8, 0, 8},
+		{"only task limit enabled", start + "-" + end, 4, 0, 4, 0},
+		{"both zero disables", start + "-" + end, 0, 0, 0, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			require.NoError(t, client.SetMaxTasksPerUser(ctx, tt.limit, tt.hours))
-			limit, err := client.GetMaxTasksPerUser(ctx)
+			require.NoError(t, client.SetTaskLimits(ctx, tt.maxTasks, tt.maxGPUs, tt.hours))
+			limits, err := client.GetTaskLimits(ctx)
 			require.NoError(t, err)
-			assert.Equal(t, tt.want, limit)
-			stored, err := client.rdb.Get(ctx, types.RedisKeyGuardMaxTasksPerUser).Int()
+			assert.Equal(t, types.TaskLimits{MaxTasksPerUser: tt.wantTasks, MaxGPUsPerUser: tt.wantGPUs}, limits)
+
+			storedTasks, err := client.rdb.Get(ctx, types.RedisKeyGuardMaxTasksPerUser).Int()
 			require.NoError(t, err)
-			assert.Equal(t, tt.limit, stored, "store the policy, not a snapshot of the effective limit")
+			assert.Equal(t, tt.maxTasks, storedTasks, "store the policy, not a snapshot of the effective limit")
+			storedGPUs, err := client.rdb.Get(ctx, types.RedisKeyGuardMaxGPUsPerUser).Int()
+			require.NoError(t, err)
+			assert.Equal(t, tt.maxGPUs, storedGPUs, "store the GPU policy, not a snapshot of the effective limit")
 		})
 	}
-	require.NoError(t, client.SetMaxTasksPerUser(ctx, 4, ""))
-	require.Error(t, client.SetMaxTasksPerUser(ctx, 1, "invalid"))
-	limit, err = client.GetMaxTasksPerUser(ctx)
+
+	require.NoError(t, client.SetTaskLimits(ctx, 4, 8, ""))
+	require.Error(t, client.SetTaskLimits(ctx, -1, 8, ""))
+	require.Error(t, client.SetTaskLimits(ctx, 4, -1, ""))
+	require.Error(t, client.SetTaskLimits(ctx, 1, 2, "invalid"))
+	limits, err = client.GetTaskLimits(ctx)
 	require.NoError(t, err)
-	assert.Equal(t, 4, limit, "invalid updates leave the existing policy intact")
+	assert.Equal(t, types.TaskLimits{MaxTasksPerUser: 4, MaxGPUsPerUser: 8}, limits, "invalid updates leave the existing policy intact")
+
 	require.NoError(t, client.rdb.Set(ctx, types.RedisKeyGuardTaskLimitHours, "invalid", 0).Err())
-	_, err = client.GetMaxTasksPerUser(ctx)
-	require.Error(t, err, "invalid persisted windows cannot silently disable the limit")
+	_, err = client.GetTaskLimits(ctx)
+	require.Error(t, err, "invalid persisted windows cannot silently disable limits")
+
+	require.NoError(t, client.rdb.Set(ctx, types.RedisKeyGuardTaskLimitHours, "", 0).Err())
+	require.NoError(t, client.rdb.Set(ctx, types.RedisKeyGuardMaxGPUsPerUser, "-2", 0).Err())
+	_, err = client.GetTaskLimits(ctx)
+	require.Error(t, err, "invalid persisted GPU limits must surface an error")
 }

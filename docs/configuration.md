@@ -40,8 +40,9 @@ booking:
 
 # Guard: monitoring and enforcement of the reservation system
 guard:
-  max-tasks-per-user: 4     # Concurrent tasks per OS account; 0 disables
-  task-limit-hours: ""     # Daily local time, e.g. "09:00-18:00"; empty = all day
+  max-tasks-per-user: 4     # Submitted tasks (running + queued) per OS account; 0 disables
+  max-gpus-per-user: 8      # Total GPUs across submitted tasks per OS account; 0 disables
+  task-limit-hours: ""      # Daily local time, e.g. "09:00-18:00"; empty = all day
   interval: "15s"
   grace: "60s"
   confirmations: 2

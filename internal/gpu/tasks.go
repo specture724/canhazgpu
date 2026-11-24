@@ -89,39 +89,131 @@ func (ae *AllocationEngine) GetRunningTasks(ctx context.Context) ([]*RunningTask
 	return tasks, nil
 }
 
-// ErrTaskLimitReached means the account must wait for a running task to finish.
-var ErrTaskLimitReached = errors.New("concurrent task limit reached")
+// ErrTaskLimitReached means the account has reached its maximum number of tasks.
+var ErrTaskLimitReached = errors.New("task limit reached")
 
-// checkTaskLimit must be called under the allocation lock when admitting a task.
-// Queue eligibility also uses it to skip accounts that cannot start yet.
-func (ae *AllocationEngine) checkTaskLimit(ctx context.Context, user, actualUser, taskID string) error {
-	limit, err := ae.client.GetMaxTasksPerUser(ctx)
+// ErrGPULimitReached means the request would exceed the account's total GPU limit.
+var ErrGPULimitReached = errors.New("GPU limit reached")
+
+func isLimitError(err error) bool {
+	return errors.Is(err, ErrTaskLimitReached) || errors.Is(err, ErrGPULimitReached)
+}
+
+func accountName(user, actualUser string) string {
+	if actualUser != "" {
+		return actualUser
+	}
+	return user
+}
+
+// checkSubmissionLimits must be called under the allocation lock when submitting
+// a new request (immediate allocation or enqueueing). It counts both running
+// tasks and queued entries owned by the OS account.
+func (ae *AllocationEngine) checkSubmissionLimits(ctx context.Context, user, actualUser string, requestedGPUs int) error {
+	limits, err := ae.client.GetTaskLimits(ctx)
 	if err != nil {
 		return err
 	}
-	if limit == 0 {
+	if limits.MaxTasksPerUser == 0 && limits.MaxGPUsPerUser == 0 {
 		return nil
 	}
-	if actualUser == "" {
-		actualUser = user
-	}
-	tasks, err := ae.GetRunningTasks(ctx)
+
+	account := accountName(user, actualUser)
+
+	runningTasks, err := ae.GetRunningTasks(ctx)
 	if err != nil {
 		return err
 	}
-	count := 0
-	for _, task := range tasks {
-		if task.Account() != actualUser {
+	queueEntries, err := ae.client.GetAllQueueEntries(ctx)
+	if err != nil {
+		return err
+	}
+
+	runningCount := 0
+	runningGPUs := 0
+	runningByTaskID := make(map[string]int)
+	for _, task := range runningTasks {
+		if task.Account() != account {
 			continue
 		}
-		// Completing a partial allocation does not start another task.
-		if taskID != "" && task.TaskID == taskID {
-			return nil
+		runningCount++
+		runningGPUs += len(task.GPUs)
+		if task.TaskID != "" {
+			runningByTaskID[task.TaskID] = len(task.GPUs)
 		}
-		count++
 	}
-	if count >= limit {
-		return fmt.Errorf("%w for %s (%d/%d)", ErrTaskLimitReached, actualUser, count, limit)
+
+	queuedCount := 0
+	queuedGPUs := 0
+	for _, entry := range queueEntries {
+		if entry.Account() != account {
+			continue
+		}
+		reqGPUs := entry.GetRequestedGPUCount()
+		if existingGPUs, hasPartial := runningByTaskID[entry.ShortID()]; hasPartial {
+			// Legacy partial allocation: task is already counted in runningCount;
+			// only add any unallocated GPUs toward total GPU usage.
+			if reqGPUs > existingGPUs {
+				queuedGPUs += reqGPUs - existingGPUs
+			}
+			continue
+		}
+		queuedCount++
+		queuedGPUs += reqGPUs
+	}
+
+	totalTasks := runningCount + queuedCount
+	totalGPUs := runningGPUs + queuedGPUs
+
+	if limits.MaxTasksPerUser > 0 && totalTasks+1 > limits.MaxTasksPerUser {
+		return fmt.Errorf("%w for %s (%d/%d submitted tasks: %d running, %d queued)",
+			ErrTaskLimitReached, account, totalTasks, limits.MaxTasksPerUser, runningCount, queuedCount)
+	}
+	if limits.MaxGPUsPerUser > 0 && totalGPUs+requestedGPUs > limits.MaxGPUsPerUser {
+		return fmt.Errorf("%w for %s (requested %d + current %d = %d > %d max GPUs; %d running, %d queued)",
+			ErrGPULimitReached, account, requestedGPUs, totalGPUs, totalGPUs+requestedGPUs, limits.MaxGPUsPerUser, runningGPUs, queuedGPUs)
+	}
+	return nil
+}
+
+// checkRunningLimits verifies that starting an already-queued task or activating
+// a due booking will not exceed the account's active task or GPU limits.
+func (ae *AllocationEngine) checkRunningLimits(ctx context.Context, user, actualUser string, requestedGPUs int, taskID string) error {
+	limits, err := ae.client.GetTaskLimits(ctx)
+	if err != nil {
+		return err
+	}
+	if limits.MaxTasksPerUser == 0 && limits.MaxGPUsPerUser == 0 {
+		return nil
+	}
+
+	account := accountName(user, actualUser)
+
+	runningTasks, err := ae.GetRunningTasks(ctx)
+	if err != nil {
+		return err
+	}
+
+	runningCount := 0
+	runningGPUs := 0
+	for _, task := range runningTasks {
+		if task.Account() != account {
+			continue
+		}
+		if taskID != "" && task.TaskID == taskID {
+			continue
+		}
+		runningCount++
+		runningGPUs += len(task.GPUs)
+	}
+
+	if limits.MaxTasksPerUser > 0 && runningCount+1 > limits.MaxTasksPerUser {
+		return fmt.Errorf("%w for %s (%d/%d running tasks)",
+			ErrTaskLimitReached, account, runningCount, limits.MaxTasksPerUser)
+	}
+	if limits.MaxGPUsPerUser > 0 && runningGPUs+requestedGPUs > limits.MaxGPUsPerUser {
+		return fmt.Errorf("%w for %s (requested %d + running %d = %d > %d max GPUs)",
+			ErrGPULimitReached, account, requestedGPUs, runningGPUs, runningGPUs+requestedGPUs, limits.MaxGPUsPerUser)
 	}
 	return nil
 }

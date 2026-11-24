@@ -35,13 +35,16 @@ housekeeping other commands trigger on demand: scheduled bookings are activated
 when their window starts, and expired, stale or idle reservations are released.
 Disable this with --no-maintenance.
 
-Each OS account may hold at most --max-tasks-per-user concurrent tasks (default
-4). Excess run/reserve requests enter the queue until a slot opens. Set the
-limit to 0 to disable it. The policy is shared through Redis and remains in
-effect after guard exits; existing tasks continue running. Use --task-limit-hours
-09:00-18:00 to apply the limit only during that daily local-time window (overnight
-windows such as 22:00-06:00 are supported). Outside it, task admission is unlimited.
-Omit the window or set it to an empty string for an all-day limit.
+Each OS account may have at most --max-tasks-per-user submitted tasks (default
+4, counting both running and queued tasks) and at most --max-gpus-per-user total
+GPUs across those submitted tasks (default 8). Requests that would exceed either
+limit are rejected immediately instead of entering the queue. Set either limit
+to 0 to disable it. The policy is shared through Redis and remains in effect
+after guard exits; existing tasks continue running. Use --task-limit-hours
+09:00-18:00 to apply these limits only during that daily local-time window
+(overnight windows such as 22:00-06:00 are supported). Outside it, task and GPU
+limits are disabled. Omit the window or set it to an empty string for an all-day
+limit.
 
 Privileges: warning other users' processes and terminating them requires root,
 so the guard is normally run from systemd:
@@ -105,9 +108,11 @@ func init() {
 		"Also tell the reservation holder when somebody else uses their GPU")
 
 	guardCmd.Flags().Int("max-tasks-per-user", defaults.MaxTasksPerUser,
-		"Maximum concurrent tasks per OS account; excess requests queue (0 disables)")
+		"Maximum submitted tasks (running + queued) per OS account (0 disables)")
+	guardCmd.Flags().Int("max-gpus-per-user", defaults.MaxGPUsPerUser,
+		"Maximum total GPUs across submitted tasks (running + queued) per OS account (0 disables)")
 	guardCmd.Flags().String("task-limit-hours", "",
-		"Daily local-time window for the task limit, HH:MM-HH:MM (empty = all day)")
+		"Daily local-time window for per-user task and GPU limits, HH:MM-HH:MM (empty = all day)")
 
 	rootCmd.AddCommand(guardCmd)
 }
@@ -214,6 +219,14 @@ func guardSettingsFromConfig() (gpu.GuardConfig, error) {
 	settings.MaxTasksPerUser = limit
 	if settings.MaxTasksPerUser < 0 {
 		return settings, fmt.Errorf("max-tasks-per-user cannot be negative")
+	}
+	gpuLimit, err := strconv.Atoi(viper.GetString("guard.max-gpus-per-user"))
+	if err != nil {
+		return settings, fmt.Errorf("max-gpus-per-user must be an integer: %w", err)
+	}
+	settings.MaxGPUsPerUser = gpuLimit
+	if settings.MaxGPUsPerUser < 0 {
+		return settings, fmt.Errorf("max-gpus-per-user cannot be negative")
 	}
 	settings.TaskLimitHours = strings.TrimSpace(viper.GetString("guard.task-limit-hours"))
 	if _, err := utils.InDailyTimeWindow(settings.TaskLimitHours, time.Now()); err != nil {

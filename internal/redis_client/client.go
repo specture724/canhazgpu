@@ -1107,42 +1107,83 @@ func (c *Client) GetViolationHistory(ctx context.Context, startTime, endTime tim
 
 // Guard Coordination
 
-// SetMaxTasksPerUser publishes the guard's pool-wide admission policy. It stays
-// in effect until another guard scan changes it, including setting it to zero.
-func (c *Client) SetMaxTasksPerUser(ctx context.Context, limit int, hours string) error {
-	if limit < 0 {
+// SetTaskLimits publishes the guard's pool-wide per-account submission limits.
+// They stay in effect until another guard scan changes them, including setting
+// a limit to zero.
+func (c *Client) SetTaskLimits(ctx context.Context, maxTasks, maxGPUs int, hours string) error {
+	if maxTasks < 0 {
 		return fmt.Errorf("max-tasks-per-user cannot be negative")
+	}
+	if maxGPUs < 0 {
+		return fmt.Errorf("max-gpus-per-user cannot be negative")
 	}
 	if _, err := utils.InDailyTimeWindow(hours, time.Now()); err != nil {
 		return err
 	}
-	// Publish both values atomically so clients never see mixed policies.
-	return c.rdb.MSet(ctx, types.RedisKeyGuardMaxTasksPerUser, limit,
-		types.RedisKeyGuardTaskLimitHours, hours).Err()
+	// Publish all values atomically so clients never see mixed policies.
+	return c.rdb.MSet(ctx,
+		types.RedisKeyGuardMaxTasksPerUser, maxTasks,
+		types.RedisKeyGuardMaxGPUsPerUser, maxGPUs,
+		types.RedisKeyGuardTaskLimitHours, hours,
+	).Err()
 }
 
-// GetMaxTasksPerUser returns the limit effective now. Pools without a guard and
-// requests outside the daily window have no limit. Evaluate on each admission,
-// so the window still works after guard --once exits or between guard scans.
-func (c *Client) GetMaxTasksPerUser(ctx context.Context) (int, error) {
-	values, err := c.rdb.MGet(ctx, types.RedisKeyGuardMaxTasksPerUser, types.RedisKeyGuardTaskLimitHours).Result()
+// GetTaskLimits returns the per-account limits effective now. Pools without a
+// guard and requests outside the daily window have no limits. Evaluate on each
+// submission or admission, so the window still works after guard --once exits
+// or between guard scans.
+func (c *Client) GetTaskLimits(ctx context.Context) (types.TaskLimits, error) {
+	values, err := c.rdb.MGet(ctx,
+		types.RedisKeyGuardMaxTasksPerUser,
+		types.RedisKeyGuardMaxGPUsPerUser,
+		types.RedisKeyGuardTaskLimitHours,
+	).Result()
 	if err != nil {
-		return 0, err
+		return types.TaskLimits{}, err
 	}
-	if values[0] == nil {
-		return 0, nil
+	maxTasks, err := parseRedisLimit(values[0], "max-tasks-per-user")
+	if err != nil {
+		return types.TaskLimits{}, err
 	}
-	limit, err := strconv.Atoi(values[0].(string))
-	if err != nil || limit == 0 {
-		return 0, err
+	maxGPUs, err := parseRedisLimit(values[1], "max-gpus-per-user")
+	if err != nil {
+		return types.TaskLimits{}, err
 	}
-	if values[1] != nil {
-		active, err := utils.InDailyTimeWindow(values[1].(string), time.Now())
+	if maxTasks == 0 && maxGPUs == 0 {
+		return types.TaskLimits{}, nil
+	}
+	if values[2] != nil {
+		hours, ok := values[2].(string)
+		if !ok {
+			return types.TaskLimits{}, fmt.Errorf("invalid task-limit-hours policy value")
+		}
+		active, err := utils.InDailyTimeWindow(hours, time.Now())
 		if err != nil || !active {
-			return 0, err
+			return types.TaskLimits{}, err
 		}
 	}
-	return limit, nil
+	return types.TaskLimits{
+		MaxTasksPerUser: maxTasks,
+		MaxGPUsPerUser:  maxGPUs,
+	}, nil
+}
+
+func parseRedisLimit(raw interface{}, name string) (int, error) {
+	if raw == nil {
+		return 0, nil
+	}
+	text, ok := raw.(string)
+	if !ok {
+		return 0, fmt.Errorf("invalid %s policy value", name)
+	}
+	value, err := strconv.Atoi(text)
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s policy value: %w", name, err)
+	}
+	if value < 0 {
+		return 0, fmt.Errorf("%s cannot be negative", name)
+	}
+	return value, nil
 }
 
 // AcquireGuardLock claims the singleton guard role. It reports whether the lock

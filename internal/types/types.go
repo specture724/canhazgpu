@@ -176,6 +176,21 @@ func (ar *AllocationRequest) Validate() error {
 	return nil
 }
 
+// GetRequestedGPUCount returns the total number of GPUs requested.
+func (ar *AllocationRequest) GetRequestedGPUCount() int {
+	if len(ar.GPUIDs) > 0 {
+		return len(ar.GPUIDs)
+	}
+	return ar.GPUCount
+}
+
+// TaskLimits represents the effective per-account submission limits published
+// by guard (0 disables a limit).
+type TaskLimits struct {
+	MaxTasksPerUser int
+	MaxGPUsPerUser  int
+}
+
 // AllocationResult represents the result of a GPU allocation
 type AllocationResult struct {
 	AllocatedGPUs []int
@@ -232,6 +247,14 @@ func (qe *QueueEntry) ShortID() string {
 		return qe.ID
 	}
 	return qe.ID[:TaskShortIDLength]
+}
+
+// Account returns the OS account that owns the queue entry.
+func (qe *QueueEntry) Account() string {
+	if qe.ActualUser != "" {
+		return qe.ActualUser
+	}
+	return qe.User
 }
 
 // GetRequestedGPUCount returns the total number of GPUs requested
@@ -402,6 +425,7 @@ const (
 	RedisKeyGuardLock            = RedisKeyPrefix + "guard:lock"
 	RedisKeyGuardKills           = RedisKeyPrefix + "guard:kills"
 	RedisKeyGuardMaxTasksPerUser = RedisKeyPrefix + "guard:max_tasks_per_user"
+	RedisKeyGuardMaxGPUsPerUser  = RedisKeyPrefix + "guard:max_gpus_per_user"
 	RedisKeyGuardTaskLimitHours  = RedisKeyPrefix + "guard:task_limit_hours"
 
 	HeartbeatInterval   = 60 * time.Second
