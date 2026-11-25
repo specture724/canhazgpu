@@ -72,20 +72,20 @@ canhazgpu schedule --json
 
 ## Making a booking
 
-Use `reserve --start`. The window length comes from `--end`, or from `--duration` if no `--end` is given:
+Only `root` can create bookings using `reserve --user <username> --start`. The window length comes from `--end`, or from `--duration` if no `--end` is given:
 
 ```bash
-# 14:00 to 16:00 today, two GPUs
-canhazgpu reserve --start 14:00 --end 16:00 --gpus 2
+# 14:00 to 16:00 today, two GPUs for alice
+sudo canhazgpu reserve --user alice --start 14:00 --end 16:00 --gpus 2
 
-# Four hours starting tomorrow morning
-canhazgpu reserve --start 'tomorrow 09:00' --duration 4h --gpus 8
+# Four hours starting tomorrow morning for bob
+sudo canhazgpu reserve --user bob --start 'tomorrow 09:00' --duration 4h --gpus 8
 
 # Specific GPUs, explicit date
-canhazgpu reserve --start 2026-08-05T09:30 --duration 2h --gpu-ids 0,1
+sudo canhazgpu reserve --user alice --start 2026-08-05T09:30 --duration 2h --gpu-ids 0,1
 
 # Starting in two hours
-canhazgpu reserve --start +2h --duration 1h --gpus 1
+sudo canhazgpu reserve --user alice --start +2h --duration 1h --gpus 1
 ```
 
 ```text
@@ -127,20 +127,21 @@ Error: GPU 0 is held for a scheduled booking by bob (14:00-16:00, booking 4f8985
 - For `reserve`, the window checked is exactly `now` to the end of the requested duration. A short reservation that ends before the booking starts is allowed.
 - For `run`, there is no known end time, so GPUs booked within the next 30 minutes are avoided. Change this with `--booking-protection-window`.
 
-**When the window starts, the booking takes over.** Any reservation still holding a booked GPU is released and the booking becomes a normal manual reservation that expires at the end of the window:
+**When the window starts, the booking takes over.** Any reservation still holding a booked GPU is released, the booking becomes a manual reservation for its target user, and any other user's processes still running on the booked GPUs are terminated immediately (`SIGKILL`) so the booking can start:
 
 ```text
 Booking 4f89853e started: released manual reservation by alice on GPU 0
+Booking 4f89853e started: killed PID 12345 (alice) on GPU 0
 ```
 
 This is why the booking output warns you up front when somebody will be interrupted:
 
 ```text
-Note: GPU 0 is reserved by alice until 15:06, which will be released when the booking starts
+Note: GPU 0 is reserved by alice until 15:06, which will be released and its processes terminated when the booking starts
 ```
 
-!!! warning "Processes are not killed by a booking"
-    Preemption releases the *reservation*, not the process. Processes started with `canhazgpu run` are supervised and their reservation loss is reported, but a booking cannot stop a job that was launched without a reservation. Such a GPU shows up as `UNRESERVED` in `canhazgpu status` and the booking prints a warning when it activates.
+!!! note "Immediate eviction during reservation windows"
+    When `canhazgpu guard` runs as `root`, it both activates due bookings and immediately terminates (`SIGKILL`) any other user's processes detected on a manually reserved or booked GPU throughout the reservation window. Non-root commands that trigger booking activation still activate the booking record, and `guard` terminates any remaining foreign processes on its next scan.
 
 !!! note "Activation is driven by canhazgpu commands"
     Bookings are activated whenever any canhazgpu command runs maintenance (`status`, `reserve`, `run`, `queue`, `schedule`, and the `web` dashboard's refresh loop). If nothing runs canhazgpu during the entire window, the booking simply expires unused. Running `canhazgpu web` (or a periodic `canhazgpu status`) keeps activation prompt.

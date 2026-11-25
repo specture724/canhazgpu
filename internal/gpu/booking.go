@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/google/uuid"
@@ -299,65 +300,192 @@ func (ae *AllocationEngine) activateDueBookings(ctx context.Context, usage map[i
 }
 
 // activateBooking converts a booking into manual reservations on its GPUs,
-// preempting whatever reservation currently holds them.
+// preempting whatever reservation currently holds them and killing any other
+// user's processes still running on those GPUs so the booking can start.
 func (ae *AllocationEngine) activateBooking(ctx context.Context, booking *types.Booking, usage map[int]*types.GPUUsage, now time.Time) error {
 	if err := ae.client.AcquireAllocationLock(ctx); err != nil {
 		return err
 	}
-	defer func() {
-		if err := ae.client.ReleaseAllocationLock(ctx); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to release allocation lock: %v\n", err)
-		}
-	}()
 
-	// Leave a due booking pending until its account has task and GPU headroom.
-	if err := ae.checkRunningLimits(ctx, booking.User, booking.ActualUser, len(booking.GPUIDs), booking.ShortID()); err != nil {
+	bookingAccount := accountName(booking.User, booking.ActualUser)
+	var preempted []evictedProcess
+
+	err := func() error {
+		defer func() {
+			if err := ae.client.ReleaseAllocationLock(ctx); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to release allocation lock: %v\n", err)
+			}
+		}()
+
+		// Leave a due booking pending until its account has task and GPU headroom.
+		if err := ae.checkRunningLimits(ctx, booking.User, booking.ActualUser, len(booking.GPUIDs), booking.ShortID()); err != nil {
+			return err
+		}
+
+		for _, gpuID := range booking.GPUIDs {
+			state, err := ae.client.GetGPUState(ctx, gpuID)
+			if err != nil {
+				return fmt.Errorf("failed to read state of GPU %d: %v", gpuID, err)
+			}
+
+			// Preempt whoever holds the GPU now: the booking was made first
+			if state.User != "" && state.BookingID != booking.ID {
+				if err := ae.recordUsage(ctx, gpuID, state, now); err != nil {
+					fmt.Fprintf(os.Stderr, "Warning: failed to record usage history: %v\n", err)
+				}
+				fmt.Fprintf(os.Stderr, "Booking %s started: released %s reservation by %s on GPU %d\n",
+					booking.ShortID(), state.Type, state.User, gpuID)
+				if prevAccount := ReservationAccount(state); prevAccount != bookingAccount && state.PID > 0 {
+					preempted = append(preempted, evictedProcess{
+						PID:   state.PID,
+						GPUID: gpuID,
+						User:  prevAccount,
+					})
+				}
+			}
+
+			newState := &types.GPUState{
+				User:         booking.User,
+				ActualUser:   booking.ActualUser,
+				StartTime:    types.FlexibleTime{Time: now},
+				Type:         types.ReservationTypeManual,
+				ExpiryTime:   booking.EndTime,
+				Note:         booking.Note,
+				BookingID:    booking.ID,
+				TaskID:       booking.ShortID(),
+				LastActivity: types.FlexibleTime{Time: now},
+				IdleTimeout:  int64(booking.IdleTimeout.Seconds()),
+			}
+
+			if err := ae.client.SetGPUState(ctx, gpuID, newState); err != nil {
+				return fmt.Errorf("failed to reserve GPU %d: %v", gpuID, err)
+			}
+		}
+
+		booking.Status = types.BookingStatusActive
+		booking.ActivatedAt = types.FlexibleTime{Time: now}
+
+		return ae.client.SaveBooking(ctx, booking)
+	}()
+	if err != nil {
 		return err
 	}
 
-	for _, gpuID := range booking.GPUIDs {
-		state, err := ae.client.GetGPUState(ctx, gpuID)
-		if err != nil {
-			return fmt.Errorf("failed to read state of GPU %d: %v", gpuID, err)
-		}
+	// Terminate any other user's processes on the booked GPUs after the new
+	// reservation state is written, so a preempted job's supervisor sees the
+	// GPU now belongs to the booking and does not release it.
+	targets := collectForeignProcesses(booking.GPUIDs, bookingAccount, usage, preempted)
+	ae.evictProcesses(targets, fmt.Sprintf("Booking %s started", booking.ShortID()))
 
-		// Preempt whoever holds the GPU now: the booking was made first
-		if state.User != "" && state.BookingID != booking.ID {
-			if err := ae.recordUsage(ctx, gpuID, state, now); err != nil {
-				fmt.Fprintf(os.Stderr, "Warning: failed to record usage history: %v\n", err)
+	return nil
+}
+
+// EvictForeignProcesses detects live GPU usage on gpuIDs and immediately kills
+// processes belonging to users other than holderAccount.
+func (ae *AllocationEngine) EvictForeignProcesses(ctx context.Context, gpuIDs []int, holderAccount string, reason string) int {
+	usage, err := ae.detectGPUUsage(ctx)
+	if err != nil {
+		return 0
+	}
+	return ae.evictForeignProcessesFromUsage(gpuIDs, holderAccount, usage, reason)
+}
+
+func (ae *AllocationEngine) evictForeignProcessesFromUsage(gpuIDs []int, holderAccount string, usage map[int]*types.GPUUsage, reason string) int {
+	targets := collectForeignProcesses(gpuIDs, holderAccount, usage, nil)
+	return ae.evictProcesses(targets, reason)
+}
+
+type evictedProcess struct {
+	PID     int
+	GPUID   int
+	User    string
+	Command string
+}
+
+// defaultProtectedGPUCommands are display/monitoring daemons that are never
+// killed when clearing GPUs for a reservation or booking.
+var defaultProtectedGPUCommands = []string{
+	"Xorg",
+	"nvidia-smi",
+	"amd-smi",
+	"dcgm-exporter",
+	"nvidia-persistenced",
+}
+
+func isProtectedGPUCommand(command string) bool {
+	for _, protected := range defaultProtectedGPUCommands {
+		if protected != "" && strings.Contains(command, protected) {
+			return true
+		}
+	}
+	return false
+}
+
+func collectForeignProcesses(gpuIDs []int, holderAccount string, usage map[int]*types.GPUUsage, preempted []evictedProcess) []evictedProcess {
+	selfPID := os.Getpid()
+	seen := make(map[int]bool)
+	var targets []evictedProcess
+
+	addTarget := func(target evictedProcess) {
+		if target.PID <= 0 || target.PID == selfPID || seen[target.PID] {
+			return
+		}
+		if target.User == "" || target.User == "unknown" || target.User == holderAccount {
+			return
+		}
+		if isProtectedGPUCommand(target.Command) {
+			return
+		}
+		seen[target.PID] = true
+		targets = append(targets, target)
+	}
+
+	for _, target := range preempted {
+		addTarget(target)
+	}
+
+	if usage != nil {
+		for _, gpuID := range gpuIDs {
+			gpuUsage := usage[gpuID]
+			if gpuUsage == nil {
+				continue
 			}
-			fmt.Fprintf(os.Stderr, "Booking %s started: released %s reservation by %s on GPU %d\n",
-				booking.ShortID(), state.Type, state.User, gpuID)
-		}
-
-		// Unreserved processes cannot be preempted - warn instead
-		if usage != nil && IsGPUInUnreservedUse(usage[gpuID], ae.config.MemoryThreshold) {
-			fmt.Fprintf(os.Stderr, "Warning: booking %s activated on GPU %d while %d process(es) run there without a reservation\n",
-				booking.ShortID(), gpuID, len(usage[gpuID].Processes))
-		}
-
-		newState := &types.GPUState{
-			User:         booking.User,
-			ActualUser:   booking.ActualUser,
-			StartTime:    types.FlexibleTime{Time: now},
-			Type:         types.ReservationTypeManual,
-			ExpiryTime:   booking.EndTime,
-			Note:         booking.Note,
-			BookingID:    booking.ID,
-			TaskID:       booking.ShortID(),
-			LastActivity: types.FlexibleTime{Time: now},
-			IdleTimeout:  int64(booking.IdleTimeout.Seconds()),
-		}
-
-		if err := ae.client.SetGPUState(ctx, gpuID, newState); err != nil {
-			return fmt.Errorf("failed to reserve GPU %d: %v", gpuID, err)
+			for _, proc := range gpuUsage.Processes {
+				addTarget(evictedProcess{
+					PID:     proc.PID,
+					GPUID:   gpuID,
+					User:    proc.User,
+					Command: proc.ProcessName,
+				})
+			}
 		}
 	}
 
-	booking.Status = types.BookingStatusActive
-	booking.ActivatedAt = types.FlexibleTime{Time: now}
+	sort.Slice(targets, func(i, j int) bool {
+		return targets[i].PID < targets[j].PID
+	})
+	return targets
+}
 
-	return ae.client.SaveBooking(ctx, booking)
+func (ae *AllocationEngine) evictProcesses(targets []evictedProcess, reason string) int {
+	killed := 0
+	for _, target := range targets {
+		if err := ae.sendSignal(target.PID, syscall.SIGKILL); err != nil {
+			if err == syscall.ESRCH {
+				continue
+			}
+			fmt.Fprintf(os.Stderr, "Warning: %s: failed to kill PID %d (%s) on GPU %d: %v\n",
+				reason, target.PID, target.User, target.GPUID, err)
+			if os.IsPermission(err) && os.Geteuid() != 0 {
+				fmt.Fprintf(os.Stderr, "Warning: terminating other users' processes requires root (ensure canhazgpu guard is running as root)\n")
+			}
+			continue
+		}
+		killed++
+		fmt.Fprintf(os.Stderr, "%s: killed PID %d (%s) on GPU %d\n",
+			reason, target.PID, target.User, target.GPUID)
+	}
+	return killed
 }
 
 // pruneBookings deletes bookings that ended long enough ago to be irrelevant
@@ -491,12 +619,12 @@ func (ae *AllocationEngine) BookingPreemptions(ctx context.Context, booking *typ
 		}
 
 		if expiry.IsZero() {
-			warnings = append(warnings, fmt.Sprintf("GPU %d currently runs a %s reservation by %s, which will be released when the booking starts",
+			warnings = append(warnings, fmt.Sprintf("GPU %d currently runs a %s reservation by %s, which will be released and its processes terminated when the booking starts",
 				gpuID, state.Type, state.User))
 			continue
 		}
 
-		warnings = append(warnings, fmt.Sprintf("GPU %d is reserved by %s until %s, which will be released when the booking starts",
+		warnings = append(warnings, fmt.Sprintf("GPU %d is reserved by %s until %s, which will be released and its processes terminated when the booking starts",
 			gpuID, state.User, FormatBookingTime(expiry, now)))
 	}
 

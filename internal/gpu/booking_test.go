@@ -2,6 +2,9 @@ package gpu
 
 import (
 	"context"
+	"os/exec"
+	"os/user"
+	"syscall"
 	"testing"
 	"time"
 
@@ -380,6 +383,155 @@ func TestActivateDueBookings_PreemptsAndReserves(t *testing.T) {
 	assert.Equal(t, "training run", state.Note)
 	assert.Equal(t, int64(900), state.IdleTimeout)
 	assert.True(t, state.ExpiryTime.ToTime().Equal(booking.EndTime.ToTime()))
+}
+
+func TestActivateBooking_KillsForeignProcesses(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	engine, client, ctx := setupBookingTestEngine(t, 2)
+	now := time.Now()
+
+	// Preempted run-type reservation held by bob on GPU 0 (with a stored PID)
+	require.NoError(t, client.SetGPUState(ctx, 0, &types.GPUState{
+		User:          "bob",
+		ActualUser:    "bob",
+		StartTime:     types.FlexibleTime{Time: now.Add(-time.Hour)},
+		LastHeartbeat: types.FlexibleTime{Time: now},
+		Type:          types.ReservationTypeRun,
+		PID:           11111,
+	}))
+
+	booking := testBooking("evict-booking", []int{0, 1}, now.Add(-time.Minute), now.Add(time.Hour), types.BookingStatusPending)
+	booking.User = "alice"
+	booking.ActualUser = "alice"
+	require.NoError(t, client.SaveBooking(ctx, booking))
+
+	type killCall struct {
+		pid int
+		sig syscall.Signal
+	}
+	var kills []killCall
+	engine.killProcess = func(pid int, sig syscall.Signal) error {
+		// Verify Redis already reflects alice's booking before killing so a
+		// preempted supervisor does not release alice's GPU.
+		state0, err := client.GetGPUState(ctx, 0)
+		require.NoError(t, err)
+		assert.Equal(t, "alice", state0.User)
+		assert.Equal(t, types.ReservationTypeManual, state0.Type)
+
+		kills = append(kills, killCall{pid: pid, sig: sig})
+		return nil
+	}
+
+	usage := map[int]*types.GPUUsage{
+		0: {
+			GPUID:    0,
+			MemoryMB: 4096,
+			Processes: []types.GPUProcessInfo{
+				{PID: 11111, User: "bob", ProcessName: "python", MemoryMB: 2048},
+				{PID: 22222, User: "bob", ProcessName: "python", MemoryMB: 2048},
+				{PID: 44444, User: "alice", ProcessName: "python", MemoryMB: 512},
+				{PID: 55555, User: "", ProcessName: "unknown-proc", MemoryMB: 256},
+				{PID: 66666, User: "root", ProcessName: "nvidia-persistenced", MemoryMB: 128},
+			},
+		},
+		1: {
+			GPUID:    1,
+			MemoryMB: 2048,
+			Processes: []types.GPUProcessInfo{
+				{PID: 22222, User: "bob", ProcessName: "python", MemoryMB: 1024}, // duplicate across GPUs
+				{PID: 33333, User: "carol", ProcessName: "torchrun", MemoryMB: 1024},
+			},
+		},
+	}
+
+	require.NoError(t, engine.activateBooking(ctx, booking, usage, now))
+
+	assert.Equal(t, []killCall{
+		{pid: 11111, sig: syscall.SIGKILL},
+		{pid: 22222, sig: syscall.SIGKILL},
+		{pid: 33333, sig: syscall.SIGKILL},
+	}, kills, "only other users' non-system processes should be SIGKILLed once each")
+}
+
+func TestActivateBooking_KillsRealForeignProcess(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	account, err := user.Current()
+	require.NoError(t, err)
+
+	victim := exec.Command("sleep", "300")
+	require.NoError(t, victim.Start())
+	exited := make(chan error, 1)
+	go func() { exited <- victim.Wait() }()
+	t.Cleanup(func() {
+		if victim.Process != nil {
+			_ = victim.Process.Kill()
+		}
+	})
+
+	engine, client, ctx := setupBookingTestEngine(t, 1)
+	now := time.Now()
+
+	booking := testBooking("real-kill-booking", []int{0}, now.Add(-time.Minute), now.Add(time.Hour), types.BookingStatusPending)
+	booking.User = "other-reserved-user"
+	booking.ActualUser = "other-reserved-user"
+	require.NoError(t, client.SaveBooking(ctx, booking))
+
+	usage := map[int]*types.GPUUsage{
+		0: {
+			GPUID:    0,
+			MemoryMB: 4096,
+			Processes: []types.GPUProcessInfo{
+				{PID: victim.Process.Pid, User: account.Username, ProcessName: "sleep", MemoryMB: 4096},
+			},
+		},
+	}
+
+	require.NoError(t, engine.activateBooking(ctx, booking, usage, now))
+
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("foreign process was not terminated when booking activated")
+	}
+}
+
+func TestEvictForeignProcessesFromUsage(t *testing.T) {
+	engine := &AllocationEngine{}
+	var killed []int
+	engine.killProcess = func(pid int, sig syscall.Signal) error {
+		assert.Equal(t, syscall.SIGKILL, sig)
+		killed = append(killed, pid)
+		return nil
+	}
+
+	usage := map[int]*types.GPUUsage{
+		0: {
+			GPUID: 0,
+			Processes: []types.GPUProcessInfo{
+				{PID: 1001, User: "bob", ProcessName: "python"},
+				{PID: 1002, User: "alice", ProcessName: "python"},
+				{PID: 1003, User: "root", ProcessName: "Xorg"},
+				{PID: 1004, User: "", ProcessName: "mystery"},
+			},
+		},
+		1: {
+			GPUID: 1,
+			Processes: []types.GPUProcessInfo{
+				{PID: 1001, User: "bob", ProcessName: "python"},
+				{PID: 1005, User: "carol", ProcessName: "vllm"},
+			},
+		},
+	}
+
+	count := engine.evictForeignProcessesFromUsage([]int{0, 1}, "alice", usage, "Reservation for alice")
+	assert.Equal(t, 2, count)
+	assert.Equal(t, []int{1001, 1005}, killed)
 }
 
 func TestActivateDueBookings_CompletesPassedWindows(t *testing.T) {

@@ -343,23 +343,24 @@ func (b *Booking) Validate() error {
 // process on a GPU nobody reserved, or a process belonging to somebody other
 // than the GPU's reservation holder.
 type Violation struct {
-	GPUID         int          `json:"gpu_id"`
-	PID           int          `json:"pid"`
-	User          string       `json:"user"`                     // OS account owning the offending process
-	Kind          string       `json:"kind"`                     // ViolationKindUnreserved or ViolationKindForeign
-	Holder        string       `json:"holder,omitempty"`         // Reservation holder as displayed, for foreign usage
-	HolderAccount string       `json:"holder_account,omitempty"` // OS account of the holder, used to reach them
-	Command       string       `json:"command,omitempty"`
-	MemoryMB      int          `json:"memory_mb"`
-	FirstSeen     FlexibleTime `json:"first_seen"`
-	LastSeen      FlexibleTime `json:"last_seen"`
-	Sightings     int          `json:"sightings"`  // Consecutive detections, used to confirm
-	WarnCount     int          `json:"warn_count"` // Warnings delivered so far
-	LastWarned    FlexibleTime `json:"last_warned,omitempty"`
-	Signals       []string     `json:"signals,omitempty"` // Termination signals already sent
-	LastSignal    FlexibleTime `json:"last_signal,omitempty"`
-	EndTime       FlexibleTime `json:"end_time,omitempty"` // Set when the violation is resolved
-	Resolution    string       `json:"resolution,omitempty"`
+	GPUID           int          `json:"gpu_id"`
+	PID             int          `json:"pid"`
+	User            string       `json:"user"`                       // OS account owning the offending process
+	Kind            string       `json:"kind"`                       // ViolationKindUnreserved or ViolationKindForeign
+	Holder          string       `json:"holder,omitempty"`           // Reservation holder as displayed, for foreign usage
+	HolderAccount   string       `json:"holder_account,omitempty"`   // OS account of the holder, used to reach them
+	ReservationType string       `json:"reservation_type,omitempty"` // "manual" or "run", for foreign usage
+	Command         string       `json:"command,omitempty"`
+	MemoryMB        int          `json:"memory_mb"`
+	FirstSeen       FlexibleTime `json:"first_seen"`
+	LastSeen        FlexibleTime `json:"last_seen"`
+	Sightings       int          `json:"sightings"`  // Consecutive detections, used to confirm
+	WarnCount       int          `json:"warn_count"` // Warnings delivered so far
+	LastWarned      FlexibleTime `json:"last_warned,omitempty"`
+	Signals         []string     `json:"signals,omitempty"` // Termination signals already sent
+	LastSignal      FlexibleTime `json:"last_signal,omitempty"`
+	EndTime         FlexibleTime `json:"end_time,omitempty"` // Set when the violation is resolved
+	Resolution      string       `json:"resolution,omitempty"`
 }
 
 // ViolationID identifies a violation by the GPU and process it concerns

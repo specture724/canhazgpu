@@ -76,12 +76,14 @@ The `process` channel only writes to terminals. If the job's stderr is a log fil
 
 ## Termination
 
-Enforcement is **off by default** — terminating other people's work is a policy decision, not a default:
+Enforcement for unreserved usage and `run`-type foreign usage is **off by default** — terminating other people's work there is a policy decision, not a default:
 
 ```bash
 canhazgpu guard --enforce --dry-run   # show what would be killed, send nothing
 canhazgpu guard --enforce             # for real
 ```
+
+**Exception — manual reservations and scheduled bookings (`canhazgpu reserve`):** during an active manual reservation or booking window, any other user's non-excluded process detected on the reserved GPU is terminated immediately with `SIGKILL` on the first scan (without waiting for `--confirmations`, `--grace`, `--max-warnings`, `--enforce`, or `--max-kills-per-hour`), so the reserved user can start without interference. `--dry-run`, unknown-owner protection, and allow lists (`--exclude-users`, `--exclude-commands`) still apply.
 
 Safety rails:
 
