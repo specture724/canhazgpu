@@ -85,6 +85,9 @@ type Guard struct {
 	// detectUsage reports what is running on each GPU. Tests replace it to
 	// simulate processes without real hardware.
 	detectUsage func(context.Context) (map[int]*types.GPUUsage, error)
+
+	// killProcess delivers termination signals. Tests may replace it.
+	killProcess func(pid int, sig syscall.Signal) error
 }
 
 func NewGuard(engine *AllocationEngine, client *redis_client.Client, config *types.Config,
@@ -97,7 +100,15 @@ func NewGuard(engine *AllocationEngine, client *redis_client.Client, config *typ
 		notifier:    notifier,
 		output:      os.Stderr,
 		detectUsage: engine.detectGPUUsage,
+		killProcess: syscall.Kill,
 	}
+}
+
+func (g *Guard) sendSignal(pid int, sig syscall.Signal) error {
+	if g.killProcess != nil {
+		return g.killProcess(pid, sig)
+	}
+	return syscall.Kill(pid, sig)
 }
 
 // SetOutput redirects the guard's own reporting, used by tests
@@ -277,15 +288,17 @@ func (g *Guard) observeViolations(ctx context.Context, gpuCount int, usage map[i
 			continue
 		}
 
-		// Stay consistent with the rest of the tool: a GPU below the memory
-		// threshold does not count as being in use
-		if !IsGPUBusy(gpuUsage, g.config.MemoryThreshold) {
-			continue
-		}
-
 		state, err := g.client.GetGPUState(ctx, gpuID)
 		if err != nil {
 			return nil, processes, err
+		}
+
+		// Stay consistent with the rest of the tool: unreserved or run GPUs
+		// below the memory threshold do not count as being in use. During a
+		// manual reservation/booking window, any foreign process on the GPU is
+		// observed and evicted so the reservation can start cleanly.
+		if state.Type != types.ReservationTypeManual && !IsGPUBusy(gpuUsage, g.config.MemoryThreshold) {
+			continue
 		}
 
 		for _, process := range gpuUsage.Processes {
@@ -314,6 +327,7 @@ func (g *Guard) observeViolations(ctx context.Context, gpuCount int, usage map[i
 				// Warnings have to reach an account, not a display name that
 				// --user may have set to anything
 				violation.HolderAccount = ReservationAccount(state)
+				violation.ReservationType = state.Type
 			}
 			observed[violation.ViolationID()] = violation
 		}
@@ -374,6 +388,7 @@ func mergeViolation(known *types.Violation, current *types.Violation, now time.T
 	known.Kind = current.Kind
 	known.Holder = current.Holder
 	known.HolderAccount = current.HolderAccount
+	known.ReservationType = current.ReservationType
 	if known.User == "" || known.User == "unknown" {
 		known.User = current.User
 	}
@@ -385,8 +400,14 @@ func mergeViolation(known *types.Violation, current *types.Violation, now time.T
 }
 
 // act warns about a confirmed violation and, when enforcement is enabled,
-// escalates to terminating the process
+// escalates to terminating the process. Foreign processes running on a manually
+// reserved or booked GPU are terminated immediately so the reservation can start.
 func (g *Guard) act(ctx context.Context, violation *types.Violation, now time.Time, pass *GuardPass) {
+	if violation.Kind == types.ViolationKindForeign && violation.ReservationType == types.ReservationTypeManual {
+		g.evictReservedGPUIntruder(violation, now, pass)
+		return
+	}
+
 	// Wait until the violation is confirmed and past its grace period, so short
 	// lived processes and reservations still starting up are left alone
 	if violation.Sightings < g.settings.Confirmations {
@@ -430,6 +451,73 @@ func (g *Guard) act(ctx context.Context, violation *types.Violation, now time.Ti
 
 	if g.terminate(ctx, violation, now) {
 		pass.Signalled++
+	}
+}
+
+func (g *Guard) evictReservedGPUIntruder(violation *types.Violation, now time.Time, pass *GuardPass) {
+	// An unidentified owner might be a system process - never terminate those
+	if violation.User == "" || violation.User == "unknown" {
+		return
+	}
+
+	if violation.WarnCount == 0 {
+		violation.WarnCount = 1
+		violation.LastWarned = types.FlexibleTime{Time: now}
+		g.deliverReservationEvictionNotice(violation)
+		pass.Warned++
+	}
+
+	if g.settings.DryRun {
+		fmt.Fprintf(g.output, "canhazgpu guard: [dry run] would send SIGKILL to PID %d (%s) to protect reservation\n",
+			violation.PID, violation.Describe())
+		violation.Signals = append(violation.Signals, "SIGKILL (dry run)")
+		violation.LastSignal = types.FlexibleTime{Time: now}
+		return
+	}
+
+	if err := g.sendSignal(violation.PID, syscall.SIGKILL); err != nil {
+		if err == syscall.ESRCH {
+			// Already gone; the next scan will resolve the violation
+			return
+		}
+		fmt.Fprintf(g.output, "canhazgpu guard: failed to send SIGKILL to PID %d: %v\n",
+			violation.PID, err)
+		if os.IsPermission(err) && os.Geteuid() != 0 {
+			fmt.Fprintf(g.output, "canhazgpu guard: run the guard as root to terminate other users' processes\n")
+		}
+		return
+	}
+
+	violation.Signals = append(violation.Signals, "SIGKILL")
+	violation.LastSignal = types.FlexibleTime{Time: now}
+	pass.Signalled++
+
+	fmt.Fprintf(g.output, "canhazgpu guard: sent SIGKILL to PID %d (%s) to protect reservation\n",
+		violation.PID, violation.Describe())
+}
+
+func (g *Guard) deliverReservationEvictionNotice(violation *types.Violation) {
+	action := fmt.Sprintf("Terminating PID %d immediately to protect the reservation.", violation.PID)
+	if g.settings.DryRun {
+		action = fmt.Sprintf("[dry run] Would terminate PID %d immediately to protect the reservation.", violation.PID)
+	}
+	msg := fmt.Sprintf("[canhazgpu] GPU %d is reserved by %s, but your process is using it (PID %d, %dMB).\n%s",
+		violation.GPUID, violation.Holder, violation.PID, violation.MemoryMB, action)
+
+	delivered := g.notifier.Notify(violation, msg)
+	if len(delivered) == 0 {
+		fmt.Fprintf(g.output, "canhazgpu guard: %s (immediate eviction, nobody could be reached)\n",
+			violation.Describe())
+	}
+
+	holderAccount := violation.HolderAccount
+	if holderAccount == "" {
+		holderAccount = violation.Holder
+	}
+	if g.settings.NotifyHolder && holderAccount != "" {
+		g.notifier.NotifyUser(holderAccount, fmt.Sprintf(
+			"[canhazgpu] GPU %d that you reserved is being used by %s (PID %d, %dMB); terminating PID %d immediately.",
+			violation.GPUID, violation.User, violation.PID, violation.MemoryMB, violation.PID))
 	}
 }
 
@@ -481,7 +569,7 @@ func (g *Guard) terminate(ctx context.Context, violation *types.Violation, now t
 		return false
 	}
 
-	if err := syscall.Kill(violation.PID, step.signal); err != nil {
+	if err := g.sendSignal(violation.PID, step.signal); err != nil {
 		if err == syscall.ESRCH {
 			// Already gone; the next scan will resolve the violation
 			return false

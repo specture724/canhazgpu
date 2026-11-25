@@ -5,6 +5,7 @@ import (
 	"io"
 	"os/exec"
 	"os/user"
+	"syscall"
 	"testing"
 	"time"
 
@@ -242,6 +243,12 @@ func TestGuardDetectsForeignUsageAndNotifiesHolder(t *testing.T) {
 	settings.ExcludeUsers = nil
 
 	guard, notifier, setUsage, ctx := setupGuard(t, 1, settings)
+	var killed []int
+	guard.killProcess = func(pid int, sig syscall.Signal) error {
+		assert.Equal(t, syscall.SIGKILL, sig)
+		killed = append(killed, pid)
+		return nil
+	}
 
 	// GPU 0 belongs to alice, who reserved it under a display name, but bob's
 	// process is on it
@@ -261,11 +268,162 @@ func TestGuardDetectsForeignUsageAndNotifiesHolder(t *testing.T) {
 	assert.Equal(t, "Alice Smith", pass.Violations[0].Holder, "messages name the holder as displayed")
 	assert.Equal(t, "alice", pass.Violations[0].HolderAccount, "notifications need the OS account")
 	assert.Equal(t, "bob", pass.Violations[0].User)
+	assert.Equal(t, []int{4242}, killed, "foreign processes on a manual reservation are killed immediately")
+	assert.Equal(t, 1, pass.Signalled)
+	assert.Equal(t, []string{"SIGKILL"}, pass.Violations[0].Signals)
 
 	require.Len(t, notifier.messages, 1)
 	assert.Contains(t, notifier.messages[0], "GPU 0 is reserved by Alice Smith")
 	assert.Equal(t, []string{"alice"}, notifier.notifiedUsers,
 		"the holder is reached by OS account, not by their display name")
+}
+
+func TestGuardImmediatelyKillsForeignProcessOnManualReservation(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	account, err := user.Current()
+	require.NoError(t, err)
+
+	victim := exec.Command("sleep", "300")
+	require.NoError(t, victim.Start())
+	exited := make(chan error, 1)
+	go func() { exited <- victim.Wait() }()
+	t.Cleanup(func() {
+		if victim.Process != nil {
+			_ = victim.Process.Kill()
+		}
+	})
+
+	// Even with Enforce=false, long grace/confirmations, and exhausted kill budget,
+	// a foreign process on a manual reservation/booking is killed immediately.
+	settings := DefaultGuardConfig()
+	settings.Enforce = false
+	settings.Confirmations = 5
+	settings.GracePeriod = time.Hour
+	settings.MaxWarnings = 3
+	settings.MaxKillsPerHour = 1
+	settings.ExcludeUsers = nil
+
+	guard, _, setUsage, ctx := setupGuard(t, 1, settings)
+	require.NoError(t, guard.client.RecordGuardKill(ctx, time.Now(), "earlier unreserved kill"))
+
+	require.NoError(t, guard.client.SetGPUState(ctx, 0, &types.GPUState{
+		User:       "other-holder",
+		ActualUser: "other-holder",
+		StartTime:  types.FlexibleTime{Time: time.Now().Add(-time.Minute)},
+		Type:       types.ReservationTypeManual,
+		ExpiryTime: types.FlexibleTime{Time: time.Now().Add(time.Hour)},
+		BookingID:  "booking-123",
+	}))
+	// Even a small CUDA allocation below MemoryThreshold is evicted on a reserved GPU.
+	setUsage(map[int]*types.GPUUsage{0: busyGPU(0, victim.Process.Pid, account.Username, 50)})
+
+	pass, err := guard.RunOnce(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, 1, pass.Signalled)
+	require.Len(t, pass.Violations, 1)
+	assert.Equal(t, []string{"SIGKILL"}, pass.Violations[0].Signals)
+
+	select {
+	case <-exited:
+	case <-time.After(5 * time.Second):
+		t.Fatal("foreign process on reserved GPU was not terminated immediately")
+	}
+
+	// Reservation eviction must not consume the hourly unreserved kill circuit-breaker budget.
+	kills, err := guard.client.CountGuardKillsSince(ctx, time.Now().Add(-time.Hour))
+	require.NoError(t, err)
+	assert.Equal(t, 1, kills)
+}
+
+func TestGuardManualReservationDryRunAndRunReservationRespectPolicy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("Skipping integration test in short mode")
+	}
+
+	t.Run("dry-run on manual reservation does not send real signal", func(t *testing.T) {
+		settings := DefaultGuardConfig()
+		settings.DryRun = true
+		settings.ExcludeUsers = nil
+
+		guard, _, setUsage, ctx := setupGuard(t, 1, settings)
+		called := false
+		guard.killProcess = func(int, syscall.Signal) error {
+			called = true
+			return nil
+		}
+		require.NoError(t, guard.client.SetGPUState(ctx, 0, &types.GPUState{
+			User:       "alice",
+			ActualUser: "alice",
+			StartTime:  types.FlexibleTime{Time: time.Now()},
+			Type:       types.ReservationTypeManual,
+			ExpiryTime: types.FlexibleTime{Time: time.Now().Add(time.Hour)},
+		}))
+		setUsage(map[int]*types.GPUUsage{0: busyGPU(0, 1<<30, "bob", 2048)})
+
+		pass, err := guard.RunOnce(ctx)
+		require.NoError(t, err)
+		assert.False(t, called)
+		assert.Equal(t, 0, pass.Signalled)
+		require.Len(t, pass.Violations, 1)
+		assert.Equal(t, []string{"SIGKILL (dry run)"}, pass.Violations[0].Signals)
+	})
+
+	t.Run("foreign process on run-type reservation still follows warn-only policy when enforce is off", func(t *testing.T) {
+		settings := DefaultGuardConfig()
+		settings.Confirmations = 1
+		settings.GracePeriod = 0
+		settings.Enforce = false
+		settings.ExcludeUsers = nil
+
+		guard, _, setUsage, ctx := setupGuard(t, 1, settings)
+		called := false
+		guard.killProcess = func(int, syscall.Signal) error {
+			called = true
+			return nil
+		}
+		require.NoError(t, guard.client.SetGPUState(ctx, 0, &types.GPUState{
+			User:          "alice",
+			ActualUser:    "alice",
+			StartTime:     types.FlexibleTime{Time: time.Now()},
+			LastHeartbeat: types.FlexibleTime{Time: time.Now()},
+			Type:          types.ReservationTypeRun,
+		}))
+		setUsage(map[int]*types.GPUUsage{0: busyGPU(0, 1<<30, "bob", 2048)})
+
+		pass, err := guard.RunOnce(ctx)
+		require.NoError(t, err)
+		assert.False(t, called)
+		assert.Equal(t, 0, pass.Signalled)
+		assert.Equal(t, 1, pass.Warned)
+	})
+
+	t.Run("unknown owner on manual reservation is never killed", func(t *testing.T) {
+		settings := DefaultGuardConfig()
+		settings.ExcludeUsers = nil
+
+		guard, _, setUsage, ctx := setupGuard(t, 1, settings)
+		called := false
+		guard.killProcess = func(int, syscall.Signal) error {
+			called = true
+			return nil
+		}
+		require.NoError(t, guard.client.SetGPUState(ctx, 0, &types.GPUState{
+			User:       "alice",
+			ActualUser: "alice",
+			StartTime:  types.FlexibleTime{Time: time.Now()},
+			Type:       types.ReservationTypeManual,
+			ExpiryTime: types.FlexibleTime{Time: time.Now().Add(time.Hour)},
+		}))
+		setUsage(map[int]*types.GPUUsage{0: busyGPU(0, 1<<30, "", 2048)})
+
+		pass, err := guard.RunOnce(ctx)
+		require.NoError(t, err)
+		assert.False(t, called)
+		assert.Equal(t, 0, pass.Signalled)
+	})
 }
 
 func TestGuardIgnoresCompliantAndQuietGPUs(t *testing.T) {

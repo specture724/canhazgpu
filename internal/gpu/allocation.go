@@ -35,13 +35,25 @@ type AllocationEngine struct {
 	usageMu     sync.Mutex
 	usageCache  map[int]*types.GPUUsage
 	usageCached time.Time
+
+	// killProcess delivers termination signals when evicting foreign processes
+	// during a reservation or booking window. Tests may replace it.
+	killProcess func(pid int, sig syscall.Signal) error
 }
 
 func NewAllocationEngine(client *redis_client.Client, config *types.Config) *AllocationEngine {
 	return &AllocationEngine{
-		client: client,
-		config: config,
+		client:      client,
+		config:      config,
+		killProcess: syscall.Kill,
 	}
+}
+
+func (ae *AllocationEngine) sendSignal(pid int, sig syscall.Signal) error {
+	if ae.killProcess != nil {
+		return ae.killProcess(pid, sig)
+	}
+	return syscall.Kill(pid, sig)
 }
 
 func (ae *AllocationEngine) detectGPUUsage(ctx context.Context) (map[int]*types.GPUUsage, error) {

@@ -330,18 +330,20 @@ Reserved 2 GPU(s): [0, 1] for command execution
 
 ## reserve
 
-Manually reserve GPUs for a specified duration.
+Manually reserve GPUs for a specified user and duration (root only).
 
-`reserve` verifies sudo credentials before it creates a reservation or booking, while retaining the calling user's reservation ownership. Run `canhazgpu reserve ...` normally and enter your sudo password when prompted; do not prefix the command with `sudo`.
+`reserve` can only be run by `root` (`sudo canhazgpu reserve --user <username> ...`), and `--user` is required to specify the target OS account that will own the reservation or booking. Regular users cannot run `reserve` directly. During an active reservation or booking window, processes belonging to other users on the reserved GPUs are terminated immediately (`SIGKILL`) so the reserved user can start without interference.
 
 ```bash
-canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>] [--nonblock] [--wait <duration>]
-                  [--idle-timeout <time>] [--start <time>] [--end <time>]
+sudo canhazgpu reserve --user <username> [--gpus <count> | --gpu-ids <ids>] [--duration <time>]
+                       [--nonblock] [--wait <duration>] [--idle-timeout <time>]
+                       [--start <time>] [--end <time>]
 ```
 
 **[→ Detailed Reserve Guide](usage-reserve.md)**
 
 **Options:**
+- `--user, -u`: Target OS username that will own the reservation or booking (required; root only)
 - `--gpus`: Number of GPUs to reserve (default: 1)
 - `--gpu-ids`: Specific GPU IDs to reserve (comma-separated, e.g., 1,3,5)
 - `--duration`: Duration to reserve GPUs (default: 30m)
@@ -349,7 +351,7 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>] [--nonb
 - `--wait`: Maximum time to wait for GPUs (e.g., 30m, 2h). Default: wait forever.
 - `--short`: Output only GPU IDs (for use with command substitution)
 - `--idle-timeout`: Release the reservation if no GPU usage is detected for this long (default: 15m, `0` disables, maximum 3h)
-- `--claim`: Reserve a GPU that only your own unreserved process is using; if anyone else is on it, wait in the queue
+- `--claim`: Reserve a GPU that only the target user's unreserved process is using; if anyone else is on it, wait in the queue
 - `--start`: Book the GPUs for a future window starting then, instead of reserving now
 - `--end`: End of the window (defaults to `--duration` after the start)
 
@@ -377,20 +379,20 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>] [--nonb
 
 **Examples:**
 ```bash
-# Reserve 1 GPU for 30 minutes (default)
-canhazgpu reserve
+# Reserve 1 GPU for alice for 30 minutes (default)
+sudo canhazgpu reserve --user alice
 
-# Reserve 2 GPUs for 4 hours
-canhazgpu reserve --gpus 2 --duration 4h
+# Reserve 2 GPUs for alice for 4 hours
+sudo canhazgpu reserve --user alice --gpus 2 --duration 4h
 
-# Reserve specific GPU IDs
-canhazgpu reserve --gpu-ids 0,2 --duration 2h
+# Reserve specific GPU IDs for alice
+sudo canhazgpu reserve --user alice --gpu-ids 0,2 --duration 2h
 
-# Reserve 1 GPU for 30 minutes
-canhazgpu reserve --duration 30m
+# Reserve 1 GPU for alice for 30 minutes
+sudo canhazgpu reserve --user alice --duration 30m
 
-# Reserve 1 GPU for 2 days
-canhazgpu reserve --gpus 1 --duration 2d
+# Reserve 1 GPU for alice for 2 days
+sudo canhazgpu reserve --user alice --gpus 1 --duration 2d
 
 # Keep the reservation even if the GPU sits unused
 canhazgpu reserve --gpus 1 --duration 8h --idle-timeout 0

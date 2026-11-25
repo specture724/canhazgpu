@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
+	"os/user"
 	"sort"
 	"strconv"
 	"strings"
@@ -20,12 +20,17 @@ import (
 
 var reserveCmd = &cobra.Command{
 	Use:   "reserve",
-	Short: "Reserve GPUs manually for a specified duration",
-	Long: `Reserve GPUs manually for a specified duration without running a command.
-This is useful for interactive development sessions or planning work.
+	Short: "Reserve GPUs manually for a specified user (root only)",
+	Long: `Reserve GPUs manually for a specified OS user without running a command.
+This is useful for administrator-managed reservations and scheduled bookings.
 
-This command verifies your sudo credentials before creating a reservation. It
-does not run the reservation as root, so it remains owned by your user account.
+Only root may run this command, and --user/-u is required to specify the target
+OS account that will own the reservation or booking. Regular users cannot run
+reserve directly.
+
+During an active reservation or scheduled booking window, any other user's
+processes found on the reserved GPUs are terminated immediately so the reserved
+user can start without interference.
 
 By default, if GPUs are not available, the command will wait in a queue until
 resources become available (FCFS - First Come First Served). Use --nonblock to
@@ -42,9 +47,8 @@ When using --gpu-ids, the --gpus flag is optional if:
 If specific GPU IDs are requested and any are not available, the reservation
 will wait in the queue until those specific IDs become available.
 
-Use --force to reserve GPUs that are currently in unreserved use. This is
-useful when you've started a job without using canhazgpu and want to create
-a reservation retroactively.
+Use --force to reserve GPUs that are currently in unreserved use. Any other
+user's processes on the reserved GPUs are terminated immediately.
 
 Reservations are released automatically when nobody uses them: if no GPU
 activity is detected within --idle-timeout (default 15m), the reservation is
@@ -54,7 +58,8 @@ Scheduling ahead (like booking a meeting room):
 - Use --start to book GPUs for a future time window instead of reserving now
 - The window length comes from --end or, if absent, from --duration
 - GPUs are picked when the booking is made and shown by 'canhazgpu schedule'
-- When the window starts, the booking becomes a normal manual reservation
+- When the window starts, the booking becomes a manual reservation for --user
+  and terminates any other user's processes on those GPUs
 - Queueing options (--nonblock, --wait) and --force do not apply to bookings
 
 GPUs that a scheduled booking needs while this reservation would still be
@@ -74,25 +79,26 @@ Time formats supported by --start and --end:
 - +2h (relative to now)
 
 IMPORTANT: Unlike 'canhazgpu run', this command does NOT automatically set
-CUDA_VISIBLE_DEVICES. After reserving, you must manually set the environment
+CUDA_VISIBLE_DEVICES. After reserving, the target user sets the environment
 variable based on the GPU IDs shown in the output:
   export CUDA_VISIBLE_DEVICES=1,3
 
 Example usage:
-  canhazgpu reserve --gpus 2 --duration 4h
-  canhazgpu reserve --gpu-ids 1,3 --duration 2h
-  canhazgpu reserve --gpu-ids 0,1,2 --duration 8h --force
-  canhazgpu reserve --gpus 1 --duration 8h --idle-timeout 1h  # Longer idle grace
-  canhazgpu reserve --nonblock --gpus 4 --duration 2h  # Fail if unavailable
-  canhazgpu reserve --wait 30m --gpus 4 --duration 2h  # Wait up to 30 minutes
-  canhazgpu reserve --start 14:00 --end 16:00 --gpus 2  # Book a time slot
-  canhazgpu reserve --start 'tomorrow 09:00' --duration 4h --gpus 8
-  export CUDA_VISIBLE_DEVICES=$(canhazgpu reserve --gpus 2 --short)  # For scripting
+  sudo canhazgpu reserve --user alice --gpus 2 --duration 4h
+  sudo canhazgpu reserve --user alice --gpu-ids 1,3 --duration 2h
+  sudo canhazgpu reserve --user alice --gpu-ids 0,1,2 --duration 8h --force
+  sudo canhazgpu reserve --user alice --gpus 1 --duration 8h --idle-timeout 1h
+  sudo canhazgpu reserve --user alice --nonblock --gpus 4 --duration 2h
+  sudo canhazgpu reserve --user alice --wait 30m --gpus 4 --duration 2h
+  sudo canhazgpu reserve --user alice --start 14:00 --end 16:00 --gpus 2
+  sudo canhazgpu reserve --user alice --start 'tomorrow 09:00' --duration 4h --gpus 8
+  sudo canhazgpu reserve --user alice --gpus 2 --short
 
-The reserved GPUs must be manually released with 'canhazgpu release' or will
-automatically expire after the specified duration.`,
+The reserved GPUs can be released by the target user with 'canhazgpu release'
+or will automatically expire after the specified duration.`,
 	RunE: func(cmd *cobra.Command, args []string) error {
-		if err := requireSudoAuthentication(cmd.Context()); err != nil {
+		targetUser, err := validateRootReserveAccess(viper.GetString("reserve.user"))
+		if err != nil {
 			return err
 		}
 
@@ -103,7 +109,7 @@ automatically expire after the specified duration.`,
 			force:          viper.GetBool("reserve.force"),
 			claim:          viper.GetBool("reserve.claim"),
 			note:           viper.GetString("reserve.note"),
-			customUser:     viper.GetString("reserve.user"),
+			targetUser:     targetUser,
 			nonblock:       viper.GetBool("reserve.nonblock"),
 			waitStr:        viper.GetString("reserve.wait"),
 			short:          viper.GetBool("reserve.short"),
@@ -124,7 +130,7 @@ type reserveOptions struct {
 	force          bool
 	claim          bool
 	note           string
-	customUser     string
+	targetUser     string
 	nonblock       bool
 	waitStr        string
 	short          bool
@@ -138,9 +144,9 @@ func init() {
 	reserveCmd.Flags().IntSliceP("gpu-ids", "G", nil, "Specific GPU IDs to reserve (comma-separated, e.g., 1,3,5)")
 	reserveCmd.Flags().StringP("duration", "d", "30m", "Duration to reserve GPUs (e.g., 30m, 2h, 1d)")
 	reserveCmd.Flags().BoolP("force", "f", false, "Force reservation even if GPU is in unreserved use")
-	reserveCmd.Flags().Bool("claim", false, "Reserve a GPU that only your own unreserved process is using; if anyone else is on it, wait in the queue")
+	reserveCmd.Flags().Bool("claim", false, "Reserve a GPU that only the target user's unreserved process is using; if anyone else is on it, wait in the queue")
 	reserveCmd.Flags().StringP("note", "n", "", "Optional note describing the reservation purpose")
-	reserveCmd.Flags().StringP("user", "u", "", "Custom user identifier (e.g., your name when using a shared account)")
+	reserveCmd.Flags().StringP("user", "u", "", "Target OS username to reserve GPUs for (required; root only)")
 	reserveCmd.Flags().Bool("nonblock", false, "Fail immediately if GPUs are unavailable instead of waiting in queue")
 	reserveCmd.Flags().StringP("wait", "w", "", "Maximum time to wait for GPUs (e.g., 30m, 2h). Default: wait forever.")
 	reserveCmd.Flags().BoolP("short", "s", false, "Output only the GPU IDs (for use with command substitution)")
@@ -153,6 +159,10 @@ func init() {
 }
 
 func runReserve(ctx context.Context, opts reserveOptions) error {
+	if strings.TrimSpace(opts.targetUser) == "" {
+		return fmt.Errorf("target user cannot be empty")
+	}
+
 	gpuCount := opts.gpuCount
 	gpuIDs := opts.gpuIDs
 
@@ -231,12 +241,8 @@ func runReserve(ctx context.Context, opts reserveOptions) error {
 	// Create allocation engine
 	engine := gpu.NewAllocationEngine(client, config)
 
-	// Get actual OS user and determine display user
-	actualUser := getCurrentUser()
-	displayUser := actualUser
-	if opts.customUser != "" {
-		displayUser = opts.customUser
-	}
+	// Assign both display user and OS account to the specified target user
+	targetUser := opts.targetUser
 
 	// Create allocation request
 	expiryTime := time.Now().Add(duration)
@@ -244,8 +250,8 @@ func runReserve(ctx context.Context, opts reserveOptions) error {
 		AllocationRequest: &types.AllocationRequest{
 			GPUCount:        gpuCount,
 			GPUIDs:          gpuIDs,
-			User:            displayUser,
-			ActualUser:      actualUser,
+			User:            targetUser,
+			ActualUser:      targetUser,
 			ReservationType: types.ReservationTypeManual,
 			ExpiryTime:      &expiryTime,
 			Force:           opts.force,
@@ -264,6 +270,9 @@ func runReserve(ctx context.Context, opts reserveOptions) error {
 	}
 	allocatedGPUs := result.AllocatedGPUs
 
+	// Immediately terminate any other user's processes on the reserved GPUs
+	engine.EvictForeignProcesses(ctx, allocatedGPUs, targetUser, fmt.Sprintf("Reservation for %s", targetUser))
+
 	// Sort GPU IDs for consistent ordering in output and environment variable
 	sort.Ints(allocatedGPUs)
 
@@ -279,8 +288,8 @@ func runReserve(ctx context.Context, opts reserveOptions) error {
 		return nil
 	}
 
-	fmt.Printf("Reserved %d GPU(s): %v for %s\n",
-		len(allocatedGPUs), allocatedGPUs, utils.FormatDuration(duration))
+	fmt.Printf("Reserved %d GPU(s) for %s: %v for %s\n",
+		len(allocatedGPUs), targetUser, allocatedGPUs, utils.FormatDuration(duration))
 
 	if idleTimeout > 0 {
 		fmt.Printf("Released automatically if no GPU usage is detected for %s\n",
@@ -288,29 +297,36 @@ func runReserve(ctx context.Context, opts reserveOptions) error {
 	}
 
 	fmt.Printf(
-		"\nRun the following command to run only on these GPUs:\nexport CUDA_VISIBLE_DEVICES=%s\n",
-		strings.Join(ids, ","),
+		"\nRun the following command as %s to run only on these GPUs:\nexport CUDA_VISIBLE_DEVICES=%s\n",
+		targetUser, strings.Join(ids, ","),
 	)
 
 	return nil
 }
 
-// sudoValidator is replaceable in tests. sudo -v verifies the caller's sudo
-// credentials without running canhazgpu as root, so reservations remain owned
-// by the user who requested them.
-var sudoValidator = func(ctx context.Context) error {
-	cmd := exec.CommandContext(ctx, "sudo", "-v")
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
-}
-
-func requireSudoAuthentication(ctx context.Context) error {
-	if err := sudoValidator(ctx); err != nil {
-		return fmt.Errorf("sudo authentication is required to reserve GPUs: %w", err)
+// currentEUID and targetUserLookup are replaceable in tests.
+var (
+	currentEUID      = os.Geteuid
+	targetUserLookup = func(username string) error {
+		_, err := user.Lookup(username)
+		return err
 	}
-	return nil
+)
+
+// validateRootReserveAccess enforces that reserve is executed by root and
+// targets an existing OS user account via --user.
+func validateRootReserveAccess(targetUser string) (string, error) {
+	if currentEUID() != 0 {
+		return "", fmt.Errorf("reserve can only be run by root for a specified user (use: sudo canhazgpu reserve --user <username> ...)")
+	}
+	targetUser = strings.TrimSpace(targetUser)
+	if targetUser == "" {
+		return "", fmt.Errorf("--user is required when reserving GPUs as root (specify the target OS username)")
+	}
+	if err := targetUserLookup(targetUser); err != nil {
+		return "", fmt.Errorf("target user %q does not exist: %w", targetUser, err)
+	}
+	return targetUser, nil
 }
 
 // parseIdleTimeout parses the --idle-timeout value, where an empty value or "0"
@@ -351,17 +367,13 @@ func runBooking(ctx context.Context, opts reserveOptions, gpuCount int, gpuIDs [
 
 	engine := gpu.NewAllocationEngine(client, config)
 
-	actualUser := getCurrentUser()
-	displayUser := actualUser
-	if opts.customUser != "" {
-		displayUser = opts.customUser
-	}
+	targetUser := opts.targetUser
 
 	booking, err := engine.CreateBooking(ctx, &gpu.BookingRequest{
 		GPUCount:    gpuCount,
 		GPUIDs:      gpuIDs,
-		User:        displayUser,
-		ActualUser:  actualUser,
+		User:        targetUser,
+		ActualUser:  targetUser,
 		StartTime:   start,
 		EndTime:     end,
 		Note:        opts.note,
@@ -369,6 +381,14 @@ func runBooking(ctx context.Context, opts reserveOptions, gpuCount int, gpuIDs [
 	})
 	if err != nil {
 		return err
+	}
+
+	// If the booking window has already started (e.g. --start now), activate it
+	// immediately as root so preemption and foreign process eviction happen right away.
+	if !start.After(time.Now()) {
+		if _, err := engine.ActivateDueBookings(ctx); err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to activate due bookings immediately: %v\n", err)
+		}
 	}
 
 	ids := make([]string, len(booking.GPUIDs))
@@ -388,8 +408,8 @@ func runBooking(ctx context.Context, opts reserveOptions, gpuCount int, gpuIDs [
 		when = fmt.Sprintf("starts in %s", utils.FormatDurationShort(start.Sub(now)))
 	}
 
-	fmt.Printf("Booked %d GPU(s): %v  %s (%s, %s long)\n",
-		len(booking.GPUIDs), booking.GPUIDs,
+	fmt.Printf("Booked %d GPU(s) for %s: %v  %s (%s, %s long)\n",
+		len(booking.GPUIDs), targetUser, booking.GPUIDs,
 		gpu.FormatBookingWindow(start, end, now),
 		when, utils.FormatDurationShort(booking.Duration()))
 	fmt.Printf("Booking ID: %s\n", booking.ShortID())

@@ -4,12 +4,20 @@ The `reserve` command allows you to manually reserve GPUs for a specific duratio
 
 ## Authorization
 
-Every `reserve` invocation verifies your sudo credentials with `sudo -v` before it creates a reservation or booking. Enter your sudo password when prompted. The command itself continues as your normal account, so the reservation remains yours and can be released with `canhazgpu release`; do not prefix it with `sudo`.
+`reserve` can only be run by `root` to create a reservation or booking for a specified existing OS user via `--user` / `-u`:
+
+```bash
+sudo canhazgpu reserve --user alice --gpus 2 --duration 4h
+```
+
+Regular users cannot invoke `reserve` directly. Both the reservation's display name and OS account owner are assigned to the specified `--user`, so that user can run on the reserved GPUs and release them early with `canhazgpu release`.
+
+During an active reservation or scheduled booking window, any other user's processes on the reserved GPUs are terminated immediately (`SIGKILL`) when the reservation/booking activates and on every `canhazgpu guard` scan so the reserved user can start immediately.
 
 ## Basic Usage
 
 ```bash
-canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>]
+sudo canhazgpu reserve --user <username> [--gpus <count> | --gpu-ids <ids>] [--duration <time>]
 ```
 
 **Defaults:**
@@ -17,12 +25,13 @@ canhazgpu reserve [--gpus <count> | --gpu-ids <ids>] [--duration <time>]
 - `--duration`: 30 minutes
 
 **Options:**
+- `--user, -u`: Target OS username to reserve GPUs for (required; root only)
 - `--gpus, -g`: Number of GPUs to reserve
 - `--gpu-ids`: Specific GPU IDs to reserve (comma-separated, e.g., 1,3,5)
 - `--duration, -d`: How long to reserve the GPUs
 - `--short, -s`: Output only GPU IDs (for use with command substitution)
 - `--idle-timeout`: Release the reservation if no GPU usage is detected for this long (default: 15m, `0` disables, maximum 3h)
-- `--claim`: Reserve a GPU that only your own unreserved process is using; if anyone else is on it, wait in the queue
+- `--claim`: Reserve a GPU that only the target user's unreserved process is using; if anyone else is on it, wait in the queue
 - `--start`: Book the GPUs for a future time window instead of reserving now
 - `--end`: End of that window (defaults to `--duration` after the start)
 
